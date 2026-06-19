@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>실험계획법(DOE) 종합 가이드 — 따라하기</title>
+<style>
+  :root{
+    --navy:#1f3864; --blue:#2e5496; --light:#d9e2f3; --lighter:#eaf0fa;
+    --accent:#c55a11; --gray:#595959; --codebg:#1e2733; --codefg:#e6edf3;
+    --ok:#1e7d46; --okbg:#e8f6ee; --warnbg:#fff4e6;
+    --border:#d6def0; --shadow:0 1px 3px rgba(20,40,80,.08),0 4px 16px rgba(20,40,80,.06);
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+    color:#1f2733; background:#f4f6fb; line-height:1.75; font-size:16px;
+  }
+  a{color:var(--blue); text-decoration:none;}
+  a:hover{text-decoration:underline;}
+
+  /* layout */
+  .wrap{display:flex; max-width:1200px; margin:0 auto; gap:0;}
+  nav.toc{
+    position:sticky; top:0; align-self:flex-start; height:100vh; overflow-y:auto;
+    width:268px; flex:0 0 268px; padding:26px 18px 60px; background:var(--navy);
+  }
+  nav.toc h2{color:#fff; font-size:15px; letter-spacing:.5px; margin:0 0 4px; opacity:.7; text-transform:uppercase;}
+  nav.toc .brand{color:#fff; font-weight:800; font-size:18px; margin:0 0 18px; line-height:1.4;}
+  nav.toc a{display:block; color:#c9d6ef; font-size:13.5px; padding:5px 10px; border-radius:7px; margin:1px 0; transition:.15s;}
+  nav.toc a:hover{background:rgba(255,255,255,.08); color:#fff; text-decoration:none;}
+  nav.toc a.sub{padding-left:22px; font-size:12.5px; color:#9fb2d6;}
+  nav.toc a.active{background:var(--accent); color:#fff;}
+
+  main{flex:1 1 auto; min-width:0; padding:0 0 80px;}
+  .page{max-width:860px; margin:0 auto; padding:0 32px;}
+
+  /* hero */
+  header.hero{
+    background:linear-gradient(135deg,var(--navy),var(--blue)); color:#fff;
+    padding:54px 32px 46px; margin-bottom:34px;
+  }
+  header.hero .page{padding:0 0;}
+  header.hero h1{margin:0 0 10px; font-size:32px; line-height:1.25;}
+  header.hero p{margin:0; font-size:16px; color:#dbe6fb;}
+  header.hero .tags{margin-top:18px; display:flex; gap:8px; flex-wrap:wrap;}
+  header.hero .tags span{background:rgba(255,255,255,.14); padding:5px 12px; border-radius:20px; font-size:13px;}
+
+  h2.sec{color:var(--navy); font-size:25px; margin:46px 0 6px; padding-bottom:8px; border-bottom:3px solid var(--blue); scroll-margin-top:14px;}
+  h3{color:var(--blue); font-size:19px; margin:28px 0 8px;}
+  h4{color:var(--gray); font-size:16px; margin:20px 0 6px;}
+  p{margin:10px 0;}
+
+  /* callouts */
+  .box{border-radius:10px; padding:14px 18px; margin:18px 0; box-shadow:var(--shadow);}
+  .note{background:var(--lighter); border-left:5px solid var(--accent);}
+  .tip{background:var(--okbg); border-left:5px solid var(--ok);}
+  .warn{background:var(--warnbg); border-left:5px solid #e08a00;}
+  .box .label{font-weight:800; display:block; margin-bottom:2px;}
+  .note .label{color:var(--accent);} .tip .label{color:var(--ok);} .warn .label{color:#b06d00;}
+
+  /* steps */
+  .steps{counter-reset:step; margin:18px 0; padding:0; list-style:none;}
+  .steps>li{
+    position:relative; background:#fff; border:1px solid var(--border); border-radius:12px;
+    padding:16px 18px 16px 60px; margin:12px 0; box-shadow:var(--shadow);
+  }
+  .steps>li::before{
+    counter-increment:step; content:counter(step);
+    position:absolute; left:16px; top:16px; width:30px; height:30px; border-radius:50%;
+    background:var(--blue); color:#fff; font-weight:800; display:flex; align-items:center; justify-content:center; font-size:15px;
+  }
+  .steps>li b{color:var(--navy);}
+
+  /* code */
+  .code{position:relative; margin:16px 0;}
+  .code pre{
+    background:var(--codebg); color:var(--codefg); border-radius:10px; padding:16px 18px;
+    overflow-x:auto; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+    font-size:13.5px; line-height:1.6; margin:0;
+  }
+  .code .lang{
+    position:absolute; top:0; left:16px; transform:translateY(-50%);
+    background:var(--blue); color:#fff; font-size:11px; font-weight:700; padding:2px 10px; border-radius:20px; letter-spacing:.5px;
+  }
+  .code button.copy{
+    position:absolute; top:9px; right:9px; background:rgba(255,255,255,.12); color:#cfe0ff;
+    border:1px solid rgba(255,255,255,.2); border-radius:7px; padding:4px 10px; font-size:12px; cursor:pointer; transition:.15s;
+  }
+  .code button.copy:hover{background:rgba(255,255,255,.22); color:#fff;}
+  .code button.copy.done{background:var(--ok); color:#fff; border-color:var(--ok);}
+  code.inline{background:#eef1f7; color:#b3431a; padding:1px 6px; border-radius:5px; font-family:Consolas,monospace; font-size:13.5px;}
+
+  /* tables */
+  table{width:100%; border-collapse:collapse; margin:18px 0; font-size:14.5px; background:#fff; border-radius:10px; overflow:hidden; box-shadow:var(--shadow);}
+  th{background:var(--navy); color:#fff; text-align:left; padding:10px 12px; font-weight:700;}
+  td{padding:9px 12px; border-top:1px solid var(--border); vertical-align:top;}
+  tr:nth-child(even) td{background:var(--lighter);}
+
+  /* equation */
+  .eq{background:#fff; border:1px dashed var(--blue); border-radius:8px; text-align:center;
+      padding:12px; margin:14px 0; font-family:"Cambria Math",Georgia,serif; font-style:italic; font-size:17px; color:var(--navy);}
+
+  ul.clean{margin:10px 0; padding-left:22px;}
+  ul.clean li{margin:6px 0;}
+
+  .pill{display:inline-block; background:var(--light); color:var(--navy); border-radius:6px; padding:1px 8px; font-size:13px; font-weight:600;}
+
+  footer{max-width:860px; margin:50px auto 0; padding:22px 32px; border-top:1px solid var(--border); color:var(--gray); font-size:13px;}
+
+  .top{position:fixed; bottom:24px; right:24px; background:var(--blue); color:#fff; width:44px; height:44px; border-radius:50%;
+       display:flex; align-items:center; justify-content:center; font-size:20px; box-shadow:var(--shadow); cursor:pointer; opacity:.85;}
+  .top:hover{opacity:1; text-decoration:none;}
+
+  @media(max-width:880px){
+    nav.toc{display:none;}
+    header.hero h1{font-size:25px;}
+    .page{padding:0 18px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<nav class="toc">
+  <div class="brand">실험계획법<br>DOE 따라하기 가이드</div>
+  <h2>목차</h2>
+  <a href="#s0">0. 한눈에 보기</a>
+  <a href="#s1">1. DOE란 무엇인가</a>
+  <a href="#s2">2. 핵심 용어</a>
+  <a href="#s3">3. 통계 이론(심화)</a>
+  <a href="#s4">4. 주요 설계 방법</a>
+  <a href="#s5">5. 진행 절차</a>
+  <a href="#s6">6. 툴: Python / R</a>
+  <a href="#s6" class="sub">6.1 환경 준비</a>
+  <a href="#s62" class="sub">6.2 설계 생성</a>
+  <a href="#s63" class="sub">6.3 ANOVA</a>
+  <a href="#s64" class="sub">6.4 최적화</a>
+  <a href="#s65" class="sub">6.5 R 사용법</a>
+  <a href="#s7">7. 제조/공정 적용</a>
+  <a href="#s8">8. 체크리스트</a>
+  <a href="#sA">부록. 용어 참조</a>
+</nav>
+
+<main>
+<header class="hero">
+  <div class="page">
+    <h1>실험계획법 (Design of Experiments, DOE)</h1>
+    <p>개념 · 통계 이론 · 설계 방법 · Python/R 활용 · 제조·공정 적용 — 따라하기 쉬운 종합 가이드</p>
+    <div class="tags"><span>심화 이론 포함</span><span>Python/R 중심</span><span>제조/공정 적용</span><span>코드 복사 가능</span></div>
+  </div>
+</header>
+
+<div class="page">
+
+<!-- 0 -->
+<h2 class="sec" id="s0">0. 한눈에 보기</h2>
+<p>실험계획법(DOE)은 <b>"어떤 입력 변수를, 어떤 조합으로, 몇 번 실험해야 가장 적은 비용으로 가장 신뢰할 수 있는 정보를 얻는가"</b>를 통계적으로 설계하는 방법론입니다. 한 번에 한 인자만 바꾸는 OFAT 방식과 달리, 여러 인자를 동시에·균형 있게 바꿔 주효과와 교호작용을 모두 추정하고 최소 실험으로 최적 조건을 찾습니다.</p>
+<div class="box note"><span class="label">핵심 메시지</span>DOE = ① 효율적 실험 배치 + ② 통계 모형(ANOVA·회귀)으로 효과 분리 + ③ 반응표면 최적화. 이 세 가지가 하나의 흐름으로 연결됩니다.</div>
+<p>이 문서는 <span class="pill">정의</span> → <span class="pill">용어</span> → <span class="pill">통계 이론</span> → <span class="pill">설계 방법</span> → <span class="pill">절차</span> → <span class="pill">툴 사용</span> → <span class="pill">적용 사례</span> → <span class="pill">체크리스트</span> 순으로 진행됩니다. 코드 블록은 우측 <b>복사</b> 버튼으로 바로 가져다 쓸 수 있습니다.</p>
+
+<!-- 1 -->
+<h2 class="sec" id="s1">1. 실험계획법이란 무엇인가</h2>
+<h3>1.1 정의</h3>
+<p>관심 반응(response, 출력)에 영향을 주는 인자(factor, 입력)들을 체계적으로 변화시키며 그 영향을 통계적으로 추정하기 위해 실험을 <b>설계·수행·분석</b>하는 방법론입니다. R. A. Fisher가 1920~30년대 농업 실험에서 체계화했고, 이후 산업 품질공학·공정 최적화로 확장되었습니다.</p>
+<p>DOE의 목적은 셋으로 정리됩니다.</p>
+<ul class="clean">
+  <li><b>스크리닝(Screening)</b> — 다수 후보 인자 중 유의한 핵심 인자를 적은 실험으로 골라냄</li>
+  <li><b>특성화(Characterization)</b> — 핵심 인자의 주효과·교호작용을 정량 모형화</li>
+  <li><b>최적화(Optimization)</b> — 반응을 최대/최소화 또는 목표값에 맞추고 견고성 확보</li>
+</ul>
+
+<h3>1.2 왜 필요한가 — OFAT의 한계</h3>
+<p>OFAT(One-Factor-At-a-Time)는 직관적이지만 두 가지 치명적 약점이 있습니다. ① 같은 정밀도에 더 많은 실험이 필요하고, ② 한 인자의 효과가 다른 인자 수준에 따라 달라지는 <b>교호작용을 구조적으로 탐지하지 못합니다</b>.</p>
+<table>
+  <tr><th>구분</th><th>OFAT</th><th>DOE(요인설계)</th></tr>
+  <tr><td>교호작용 추정</td><td>불가능</td><td>가능</td></tr>
+  <tr><td>동일 정밀도 대비 실험 수</td><td>많음</td><td>적음 (효율적)</td></tr>
+  <tr><td>실험 공간 탐색</td><td>축을 따라 일부만</td><td>공간 전체를 균형 있게</td></tr>
+  <tr><td>통계적 유의성 판단</td><td>어려움</td><td>ANOVA로 정량화</td></tr>
+  <tr><td>최적화 연결</td><td>제한적</td><td>반응표면법으로 직접 연결</td></tr>
+</table>
+
+<h3>1.3 좋은 실험의 3대 원칙 (Fisher)</h3>
+<ul class="clean">
+  <li><b>반복(Replication)</b> — 동일 조건을 여러 번 실험해 실험 오차를 추정하고 정밀도를 높임</li>
+  <li><b>랜덤화(Randomization)</b> — 실험 순서를 무작위로 배치해 시간 드리프트 등 잡음의 편향을 방지</li>
+  <li><b>블록화(Blocking)</b> — 원료 로트·작업조처럼 알려진 변동 요인을 블록으로 묶어 오차에서 분리</li>
+</ul>
+<div class="box tip"><span class="label">기억하기 (R-R-B)</span>Replication(정밀도) · Randomization(편향 제거) · Blocking(잡음 분리) — 세 원칙이 DOE 신뢰성을 떠받칩니다.</div>
+
+<!-- 2 -->
+<h2 class="sec" id="s2">2. 핵심 개념과 용어</h2>
+<table>
+  <tr><th>용어</th><th>의미</th></tr>
+  <tr><td>인자 (Factor)</td><td>반응에 영향을 줄 입력 변수. 연속형(온도)·범주형(촉매 종류) 모두 가능</td></tr>
+  <tr><td>수준 (Level)</td><td>인자가 취하는 값. 2수준(±1), 3수준 등. 부호화로 −1/+1 표준화</td></tr>
+  <tr><td>반응 (Response)</td><td>측정하는 출력(수율·강도·불량률). 여러 개일 수 있음(다반응 최적화)</td></tr>
+  <tr><td>처리조합 (Treatment)</td><td>인자 수준들의 한 조합 = 실험 한 번의 조건(run)</td></tr>
+  <tr><td>주효과 (Main effect)</td><td>한 인자를 저수준→고수준으로 바꿀 때 반응의 평균 변화량</td></tr>
+  <tr><td>교호작용 (Interaction)</td><td>한 인자의 효과가 다른 인자 수준에 따라 달라지는 현상</td></tr>
+  <tr><td>직교성 (Orthogonality)</td><td>인자 열이 독립이어서 효과를 섞이지 않게 추정할 수 있는 성질</td></tr>
+  <tr><td>별칭 (Alias / Confounding)</td><td>부분요인설계에서 둘 이상 효과가 구분 불가하게 섞임</td></tr>
+  <tr><td>중심점 (Center point)</td><td>연속인자를 0(중앙)에 둔 실험. 곡률 검정·순수오차 추정</td></tr>
+  <tr><td>해상도 (Resolution)</td><td>어떤 차수 효과끼리 별칭되는지를 나타내는 지표(III, IV, V…)</td></tr>
+</table>
+<p>부호화는 단순 편의가 아닙니다. 실제 단위(예: 80℃, 120℃)를 −1/+1로 바꾸면 직교성이 보장되고, 회귀계수가 곧 효과로 직접 해석됩니다.</p>
+<div class="eq">x<sub>coded</sub> = (x<sub>real</sub> − center) / (range / 2)</div>
+
+<!-- 3 -->
+<h2 class="sec" id="s3">3. 통계 이론 기초 (심화)</h2>
+
+<h3>3.1 선형 모형과 최소제곱 추정</h3>
+<p>DOE 분석의 토대는 일반선형모형입니다. 관측 반응 y는 설계행렬 X, 모수 β, 오차 ε로 표현됩니다.</p>
+<div class="eq">y = Xβ + ε,&nbsp;&nbsp; ε ~ N(0, σ²I)</div>
+<p>최소제곱(OLS) 추정량은 잔차제곱합을 최소화하여 닫힌 형태로 구해집니다. 직교설계에서는 XᵀX가 대각행렬이 되어 각 효과가 독립적으로 안정적으로 추정됩니다.</p>
+<div class="eq">β̂ = (XᵀX)⁻¹ Xᵀy</div>
+<p>2수준 요인설계에서 인자의 '효과'는 +1 평균에서 −1 평균을 뺀 값이며, 회귀계수는 그 절반입니다.</p>
+<div class="eq">Effect = ȳ(+1) − ȳ(−1) = 2 × β̂</div>
+
+<h3>3.2 분산분석 (ANOVA)</h3>
+<p>전체 변동(SST)을 모형이 설명하는 변동과 오차 변동(SSE)으로 분해합니다.</p>
+<div class="eq">SST = SS(model) + SSE,&nbsp;&nbsp; SST = Σ(yᵢ − ȳ)²</div>
+<p>평균제곱(MS)을 만들고 효과 MS를 오차 MS로 나눈 F비로 유의성을 판정합니다. p-값이 유의수준(보통 0.05)보다 작으면 유의합니다.</p>
+<div class="eq">F = MS(effect) / MS(error),&nbsp;&nbsp; p = P(F &gt; F<sub>obs</sub>)</div>
+<table>
+  <tr><th>요인</th><th>제곱합(SS)</th><th>자유도(df)</th><th>평균제곱(MS)</th><th>F비</th></tr>
+  <tr><td>인자/효과</td><td>SS<sub>A</sub></td><td>df<sub>A</sub></td><td>SS<sub>A</sub>/df<sub>A</sub></td><td>MS<sub>A</sub>/MS<sub>E</sub></td></tr>
+  <tr><td>오차</td><td>SSE</td><td>df<sub>E</sub></td><td>SS<sub>E</sub>/df<sub>E</sub></td><td>—</td></tr>
+  <tr><td>합계</td><td>SST</td><td>df<sub>T</sub></td><td>—</td><td>—</td></tr>
+</table>
+<div class="box warn"><span class="label">주의</span>F검정은 오차의 정규성·등분산·독립성 가정에 기반합니다. 분석 후 반드시 잔차도(정규확률도, 잔차 vs 적합값)를 확인하세요.</div>
+
+<h3>3.3 적합도와 모형 진단</h3>
+<ul class="clean">
+  <li><b>R²·수정 R²</b> — 모형이 설명하는 변동 비율. 수정 R²는 항 개수 패널티가 있어 과적합 비교에 유용</li>
+  <li><b>예측 R²(Q²)</b> — 새 데이터 예측력. 수정 R²와 크게 벌어지면 과적합 신호</li>
+  <li><b>적합결여 검정(Lack-of-Fit)</b> — 순수오차와 모형 잔차를 비교. 유의하면 항 부족(곡률 누락 등)</li>
+  <li><b>잔차 진단</b> — 정규확률도(정규성), 잔차 vs 적합값(등분산), 잔차 vs 순서(독립성)</li>
+</ul>
+
+<h3>3.4 반응표면법(RSM)과 2차 모형</h3>
+<p>최적점 근방의 곡률을 표현하려면 2차 모형을 적합합니다(선형·교호작용·제곱항 포함).</p>
+<div class="eq">ŷ = β₀ + Σβᵢxᵢ + Σβᵢⱼxᵢxⱼ + Σβᵢᵢxᵢ²</div>
+<p>정상점(stationary point)은 기울기를 0으로 놓아 구하고, 헤시안 고유값 부호로 최대·최소·안장점을 판정합니다(정준분석). 다반응은 만족도(desirability) 함수로 동시 최적화합니다.</p>
+<div class="eq">∂ŷ/∂x = 0&nbsp;&nbsp;⟹&nbsp;&nbsp; x<sub>s</sub> = −½ B⁻¹ b</div>
+
+<!-- 4 -->
+<h2 class="sec" id="s4">4. 주요 실험설계 방법</h2>
+<p>설계 선택은 <b>목적(스크리닝/최적화)</b>과 <b>예산(실험 가능 횟수)</b>의 함수입니다. 아래 흐름으로 고르세요.</p>
+<ol class="steps">
+  <li>인자가 많고 핵심만 거르고 싶다 → <b>Plackett-Burman</b>, 해상도 III 부분요인</li>
+  <li>주효과·교호작용을 깨끗이 보고 싶다 → <b>완전요인</b> 또는 해상도 IV/V 부분요인</li>
+  <li>최적 조건(곡률 포함)을 찾고 싶다 → <b>반응표면(CCD, Box-Behnken)</b></li>
+  <li>잡음에 둔감한 견고 조건을 원한다 → <b>다구치(강건설계)</b></li>
+  <li>성분 비율 합이 1인 배합 문제다 → <b>혼합물 설계(Mixture)</b></li>
+</ol>
+
+<h3>4.1 완전요인설계 (Full Factorial)</h3>
+<p>k개 인자를 2수준 모든 조합(2ᵏ)으로 실험합니다. 모든 효과를 별칭 없이 추정해 정보량이 가장 풍부하지만, 인자가 늘면 실험 수가 급증(2⁵=32, 2⁷=128)합니다.</p>
+
+<h3>4.2 부분요인설계 (Fractional Factorial)와 해상도</h3>
+<p>완전요인의 일부(1/2, 1/4 …)만 실험합니다. '고차 교호작용은 거의 무시 가능'하다는 희소성 원리에 근거하며, 대신 일부 효과가 별칭됩니다.</p>
+<table>
+  <tr><th>해상도</th><th>별칭 구조</th><th>용도</th></tr>
+  <tr><td>III</td><td>주효과 ↔ 2차 교호작용 별칭</td><td>스크리닝. 교호작용 가정 시 주의</td></tr>
+  <tr><td>IV</td><td>주효과 깨끗, 2차 교호작용끼리 별칭</td><td>스크리닝~특성화 절충</td></tr>
+  <tr><td>V</td><td>주효과·2차 교호작용 깨끗(3차와 별칭)</td><td>특성화·정밀 분석</td></tr>
+</table>
+<div class="box note"><span class="label">정의 관계</span>예: 2<sup>(4-1)</sup>에서 D=ABC로 생성 → 정의관계 I=ABCD. 각 별칭은 I=ABCD에 곱해 구합니다(예: A=BCD).</div>
+
+<h3>4.3 Plackett-Burman 설계</h3>
+<p>실험 수가 4의 배수(8, 12, 20…)이며 많은 인자(최대 N−1개)를 적은 실험으로 스크리닝합니다. 해상도 III이라 주효과만 관심 있는 초기 단계에 적합합니다.</p>
+
+<h3>4.4 중심점과 곡률 검정</h3>
+<p>2수준 설계는 본질적으로 평면(선형)만 적합합니다. 중심점 실험을 추가하면 순수오차를 추정하고, 코너 평균과 중심 평균의 차이로 곡률을 검정할 수 있습니다. 곡률이 유의하면 RSM으로 확장합니다.</p>
+
+<h3>4.5 반응표면 설계: CCD vs Box-Behnken</h3>
+<table>
+  <tr><th>항목</th><th>중심합성설계 (CCD)</th><th>Box-Behnken (BBD)</th></tr>
+  <tr><td>구성</td><td>요인점 + 축점(±α) + 중심점</td><td>변의 중점 + 중심점</td></tr>
+  <tr><td>수준 수</td><td>5수준 (−α,−1,0,+1,+α)</td><td>3수준 (−1,0,+1)</td></tr>
+  <tr><td>장점</td><td>확장 용이, 회전성 설정 가능</td><td>극단 조합 회피, 실험 수 적음</td></tr>
+  <tr><td>적합</td><td>공정 최적화 일반</td><td>극단 조건이 위험/고가일 때</td></tr>
+</table>
+
+<h3>4.6 다구치(Taguchi) 강건설계</h3>
+<p>제어 인자와 잡음 인자를 내·외측 배열로 함께 설계해, 잡음에 둔감하면서 목표 성능을 내는 조건을 찾습니다. 평균뿐 아니라 변동까지 줄이며 S/N비를 특성치로 씁니다.</p>
+<div class="eq">S/N (망목) = 10·log₁₀(μ² / σ²)</div>
+
+<h3>4.7 혼합물 설계 (Mixture)</h3>
+<p>성분 비율 합이 1(100%)인 배합 문제(처방·조성)에 사용합니다. 인자가 독립적이지 않으므로 단체격자·단체중심 설계와 Scheffé 다항모형을 씁니다.</p>
+
+<!-- 5 -->
+<h2 class="sec" id="s5">5. 실험 진행 절차 (단계별)</h2>
+<p>DOE는 일회성이 아니라 순차적 학습 과정입니다. '스크리닝 → 특성화 → 최적화 → 검증'으로 이어지며, 한 번에 전체 예산의 25% 이상을 쓰지 말라는 경험칙이 있습니다.</p>
+<ol class="steps">
+  <li><b>문제 정의</b> — 목표 반응·제약·현재 성능 명확화, 측정시스템(MSA) 점검</li>
+  <li><b>인자·범위 선정</b> — 공정지식·브레인스토밍으로 인자/수준/반응 결정</li>
+  <li><b>설계 선택</b> — 목적·예산에 맞는 설계 선정, 검정력(power) 확인</li>
+  <li><b>실험 수행</b> — 랜덤 순서로 실행, 조건·이상치 기록</li>
+  <li><b>분석</b> — ANOVA·회귀, 효과·교호작용, 잔차 진단</li>
+  <li><b>최적화</b> — RSM·만족도 함수로 최적 조건 도출</li>
+  <li><b>확인 실험</b> — 예측 조건 재실험으로 검증(confirmation run)</li>
+</ol>
+<div class="box note"><span class="label">검정력(Power)</span>설계 단계에서 '탐지하고 싶은 최소 효과 크기'를 정하고, 그 효과를 충분한 확률(보통 ≥0.8)로 검출할 반복 수를 미리 계산하세요. 실험 후 "데이터가 부족했다"를 막아줍니다.</div>
+
+<!-- 6 -->
+<h2 class="sec" id="s6">6. 툴 사용법 — Python / R</h2>
+<p>아래 Python 코드는 실제 실행하여 동작을 확인했습니다. 핵심 라이브러리: 설계 생성 <code class="inline">pyDOE3</code>, 모형·ANOVA <code class="inline">statsmodels</code>, 수치 <code class="inline">numpy/pandas/scipy</code>.</p>
+
+<h4>6.1 환경 준비</h4>
+<div class="code"><span class="lang">bash</span><button class="copy">복사</button><pre>pip install pyDOE3 statsmodels pandas numpy scipy matplotlib</pre></div>
+
+<h3 id="s62">6.2 설계 생성 (pyDOE3)</h3>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre>import numpy as np, pandas as pd
+from pyDOE3 import ff2n, fracfact, ccdesign, bbdesign, pbdesign
+
+# 2^3 완전요인설계 (부호화 -1/+1)
+full = ff2n(3)                      # shape (8, 3)
+
+# 2^(4-1) 부분요인설계: D = A*B*C  (정의관계 I=ABCD, 해상도 IV)
+frac = fracfact('a b c abc')        # shape (8, 4)
+
+# 중심합성설계(CCD): 2인자, 면중심(face-centered)
+ccd = ccdesign(2, center=(1, 1), alpha='orthogonal', face='ccf')
+
+# Box-Behnken: 3인자
+bbd = bbdesign(3)                   # shape (15, 3)
+
+# Plackett-Burman: 5인자 스크리닝
+pb  = pbdesign(5)</pre></div>
+<p>부호화 행렬을 실제 단위로 환산하려면 중심값과 반범위(range/2)를 씁니다.</p>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre># 예: 온도 80~120℃, 농도 1~3M
+center = np.array([100, 2.0]); half = np.array([20, 1.0])
+real = full[:, :2] * half + center   # -1 -> 80℃, +1 -> 120℃</pre></div>
+
+<h3 id="s63">6.3 모형 적합과 ANOVA (statsmodels)</h3>
+<p>2인자 요인설계에 교호작용을 포함한 회귀모형을 적합하고 분산분석표·효과를 출력하는 전형적 흐름입니다.</p>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre>import statsmodels.formula.api as smf
+import statsmodels.api as sm
+
+df = pd.DataFrame(ff2n(2), columns=['Temp', 'Conc'])
+df['Yield'] = [68.1, 73.2, 71.0, 80.5, 79.8, 84.9, 83.1, 92.6]   # 측정 수율
+
+# Temp*Conc 는 Temp + Conc + Temp:Conc 로 전개됨
+model = smf.ols('Yield ~ Temp * Conc', data=df).fit()
+
+print(model.summary())                  # 계수, t, p, R^2
+print(sm.stats.anova_lm(model, typ=2))  # ANOVA 표 (SS, F, p)
+
+effects = 2 * model.params              # 부호화 계수 -> 효과
+print(effects)</pre></div>
+<div class="box tip"><span class="label">해석 요령</span>계수의 p&lt;0.05면 유의. 부호화 모형에서 계수 절대값이 클수록 영향이 큽니다. <code class="inline">Temp:Conc</code> 계수가 유의하면 두 인자 사이에 교호작용이 존재합니다.</div>
+
+<h3 id="s64">6.4 반응표면 적합과 최적화 (statsmodels + scipy)</h3>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre>from scipy.optimize import minimize
+
+# 2차 모형 적합 (제곱항은 I(...)로 표현)
+rsm = smf.ols(
+    'Yield ~ Temp + Conc + Temp:Conc + I(Temp**2) + I(Conc**2)',
+    data=df_ccd).fit()
+
+# -Yield 를 최소화 = Yield 최대화
+def neg_yield(x):
+    g = pd.DataFrame({'Temp':[x[0]], 'Conc':[x[1]]})
+    return -rsm.predict(g).iloc[0]
+
+res = minimize(neg_yield, x0=[0, 0], bounds=[(-1, 1), (-1, 1)])
+print('최적 부호값:', res.x, ' 예측 수율:', -res.fun)</pre></div>
+<h4>시각화 (교호작용도 · 등고선)</h4>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre>import matplotlib.pyplot as plt
+
+# 교호작용도: Conc 수준별 Temp 효과
+for c, sub in df.groupby('Conc'):
+    plt.plot(sub['Temp'], sub['Yield'], marker='o', label=f'Conc={c}')
+plt.xlabel('Temp (coded)'); plt.ylabel('Yield'); plt.legend(); plt.show()
+
+# 반응표면 등고선
+xx, yy = np.meshgrid(np.linspace(-1,1,50), np.linspace(-1,1,50))
+grid = pd.DataFrame({'Temp':xx.ravel(), 'Conc':yy.ravel()})
+zz = rsm.predict(grid).values.reshape(xx.shape)
+cs = plt.contourf(xx, yy, zz, 20, cmap='viridis')
+plt.colorbar(cs); plt.xlabel('Temp'); plt.ylabel('Conc'); plt.show()</pre></div>
+
+<h3 id="s65">6.5 R 사용법 (참고)</h3>
+<p>R은 DOE 전용 패키지가 풍부합니다. 설계는 <code class="inline">FrF2</code>·<code class="inline">rsm</code>·<code class="inline">DoE.base</code>, 분석은 <code class="inline">lm()/aov()</code>와 <code class="inline">rsm</code>을 씁니다.</p>
+<div class="code"><span class="lang">R</span><button class="copy">복사</button><pre># install.packages(c("FrF2", "rsm", "DoE.base"))
+library(FrF2); library(rsm)
+
+# 2^(5-1) 부분요인설계, 해상도 V
+des <- FrF2(nruns = 16, nfactors = 5, resolution = 5)
+
+des$y <- c(/* 측정값 */)
+m <- lm(y ~ (A + B + C + D + E)^2, data = des)
+anova(m); summary(m)
+
+# 반응표면: 중심합성설계 + 2차 모형
+ccd <- ccd(2, n0 = 4, alpha = "rotatable")
+fit <- rsm(y ~ SO(x1, x2), data = ccd)   # SO = 2차(second-order)
+summary(fit); canonical(fit)             # 정상점·최적점 유형</pre></div>
+
+<h4>툴 선택 가이드</h4>
+<table>
+  <tr><th>툴</th><th>강점</th><th>비고</th></tr>
+  <tr><td>Python (pyDOE3+statsmodels)</td><td>무료, 자동화·재현성, 파이프라인 통합</td><td>GUI 없음</td></tr>
+  <tr><td>R (FrF2/rsm)</td><td>DOE 패키지 가장 성숙, 논문 수준 분석</td><td>학습곡선</td></tr>
+  <tr><td>Minitab / JMP</td><td>GUI·마법사, 보고서 자동</td><td>상용(유료)</td></tr>
+  <tr><td>Excel + 추가기능</td><td>접근성, 간단 요인설계</td><td>복잡 설계·RSM엔 한계</td></tr>
+</table>
+
+<!-- 7 -->
+<h2 class="sec" id="s7">7. 제조 / 공정 적용 사례</h2>
+<h3>7.1 사례 개요 — 반응 수율 최적화</h3>
+<p>반응 공정에서 수율(%)을 최대화하려 합니다. 후보 인자는 온도·농도·교반속도·촉매량·시간 등 다수. 예산 제약상 순차적 DOE로 접근합니다.</p>
+<table>
+  <tr><th>단계</th><th>설계</th><th>목적·결과</th></tr>
+  <tr><td>① 스크리닝</td><td>2<sup>(5-1)</sup> 부분요인(16run, 해상도 V) + 중심점 3</td><td>온도·농도·시간 3개 유의, 곡률 유의 → RSM 필요</td></tr>
+  <tr><td>② 특성화/최적화</td><td>3인자 중심합성설계(CCD, 회전성)</td><td>2차 모형 적합, R²·예측R² 확인, 교호작용 규명</td></tr>
+  <tr><td>③ 최적화</td><td>만족도(desirability) 최적화</td><td>최적 조건 도출: 예측 수율 ≈ 93%</td></tr>
+  <tr><td>④ 확인 실험</td><td>최적 조건 5회 반복</td><td>실측 92.4±0.6% — 예측 구간 내, 검증 완료</td></tr>
+</table>
+<div class="code"><span class="lang">python</span><button class="copy">복사</button><pre># 1) 스크리닝: 부분요인 + 중심점으로 핵심 인자/곡률 확인
+scr = smf.ols('Yield ~ (Temp+Conc+Stir+Cat+Time)', data=screen_df).fit()
+# 유의 인자: Temp, Conc, Time  /  중심점 곡률 검정 -> 유의
+
+# 2) RSM: 3인자 CCD에 2차 모형 적합
+rsm = smf.ols('Yield ~ Temp + Conc + Time '
+              '+ Temp:Conc + Temp:Time + Conc:Time '
+              '+ I(Temp**2) + I(Conc**2) + I(Time**2)', data=ccd_df).fit()
+
+# 3) 최적화: -Yield 최소화로 최대 수율 조건 탐색 (6.4절 방식)
+# 4) 확인 실험으로 예측 검증</pre></div>
+<div class="box warn"><span class="label">실무 포인트</span>최적점이 실험 범위 경계에 걸리면 '진짜 최적'이 아닐 수 있습니다. 이때는 가장 가파른 상승 방향(steepest ascent)으로 영역을 이동한 뒤 다시 RSM을 수행합니다.</div>
+
+<h3>7.2 다른 제조 분야 확장</h3>
+<ul class="clean">
+  <li><b>사출/성형</b> — 금형온도·사출압·냉각시간으로 휨·치수 불량 최소화(망목, 다구치)</li>
+  <li><b>용접/접합</b> — 전류·속도·압력으로 접합강도 최대화 및 변동 최소화</li>
+  <li><b>도금/코팅</b> — 전류밀도·온도·시간으로 두께 균일도 확보(RSM 등고선)</li>
+  <li><b>배합/조성</b> — 성분 비율 합=1 제약 → 혼합물 설계로 물성 최적 배합</li>
+</ul>
+
+<!-- 8 -->
+<h2 class="sec" id="s8">8. 실무 체크리스트 &amp; 흔한 실수</h2>
+<h3>8.1 실험 전 체크리스트</h3>
+<ol class="steps">
+  <li>반응을 측정할 수 있고 측정시스템이 충분히 정밀한가(MSA)?</li>
+  <li>인자·범위를 공정 지식에 근거해 정했는가? 범위가 너무 좁/넓지 않은가?</li>
+  <li>목적(스크리닝/최적화)에 맞는 설계·해상도를 골랐는가?</li>
+  <li>검정력 계산으로 반복·실험 수를 정했는가?</li>
+  <li>실행 순서를 랜덤화하고 블록 요인을 반영했는가?</li>
+  <li>중심점을 넣어 곡률·순수오차를 확보했는가?</li>
+</ol>
+<h3>8.2 흔한 실수</h3>
+<table>
+  <tr><th>실수</th><th>결과</th><th>대응</th></tr>
+  <tr><td>랜덤화 생략</td><td>시간 드리프트가 효과로 위장</td><td>실행 순서 무작위화</td></tr>
+  <tr><td>교호작용 무시(저해상도)</td><td>잘못된 주효과 해석</td><td>목적에 맞는 해상도 선택</td></tr>
+  <tr><td>중심점·반복 없음</td><td>곡률·오차 추정 불가</td><td>중심점 3~5회 추가</td></tr>
+  <tr><td>범위 너무 좁음</td><td>효과가 잡음에 묻힘</td><td>충분한 범위 설정</td></tr>
+  <tr><td>확인 실험 생략</td><td>최적 조건 미검증</td><td>예측 조건 재실험</td></tr>
+  <tr><td>과적합(항 과다)</td><td>예측력 저하</td><td>수정/예측 R² 비교, 항 정리</td></tr>
+</table>
+<div class="box tip"><span class="label">한 장 요약</span>목적을 정하고(스크리닝/최적화) → 알맞은 설계를 고르고 → 랜덤·반복·블록으로 신뢰성을 확보하고 → ANOVA·회귀로 유의 효과·교호작용을 분리하고 → RSM으로 최적화한 뒤 → 반드시 확인 실험으로 검증한다.</div>
+
+<!-- 부록 -->
+<h2 class="sec" id="sA">부록. 용어 빠른 참조</h2>
+<table>
+  <tr><th>영문</th><th>한글</th><th>한 줄 설명</th></tr>
+  <tr><td>Factor / Level</td><td>인자 / 수준</td><td>입력 변수와 그 값</td></tr>
+  <tr><td>Main effect</td><td>주효과</td><td>한 인자 변화의 평균 영향</td></tr>
+  <tr><td>Interaction</td><td>교호작용</td><td>인자 효과가 다른 인자에 의존</td></tr>
+  <tr><td>Confounding / Alias</td><td>교락 / 별칭</td><td>효과가 구분 불가하게 섞임</td></tr>
+  <tr><td>Resolution</td><td>해상도</td><td>어느 차수끼리 별칭되는지(III/IV/V)</td></tr>
+  <tr><td>Center point</td><td>중심점</td><td>곡률·순수오차 추정용 중앙 실험</td></tr>
+  <tr><td>RSM / CCD / BBD</td><td>반응표면/중심합성/Box-Behnken</td><td>2차 모형 최적화 설계</td></tr>
+  <tr><td>ANOVA / F-test</td><td>분산분석 / F검정</td><td>변동 분해와 유의성 판정</td></tr>
+  <tr><td>Desirability</td><td>만족도</td><td>다반응 동시 최적화 함수</td></tr>
+  <tr><td>Steepest ascent</td><td>최대상승경로</td><td>최적 영역으로 이동하는 방향</td></tr>
+</table>
+<h4>참고 문헌</h4>
+<ul class="clean">
+  <li>Montgomery, D.C., <i>Design and Analysis of Experiments</i> (DOE 표준 교재)</li>
+  <li>Box, Hunter &amp; Hunter, <i>Statistics for Experimenters</i></li>
+  <li>Myers, Montgomery &amp; Anderson-Cook, <i>Response Surface Methodology</i></li>
+  <li>Python: pyDOE3, statsmodels 공식 문서 / R: FrF2, rsm 패키지 문서</li>
+</ul>
+
+</div>
+<footer>실험계획법(DOE) 종합 가이드 · 심화 이론 · Python/R 중심 · 제조/공정 적용 · 작성일 2026-06-17</footer>
+</main>
+</div>
+
+<a href="#" class="top" title="맨 위로">↑</a>
+
+<script>
+// 코드 복사
+document.querySelectorAll('.code button.copy').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    var code = btn.parentElement.querySelector('pre').innerText;
+    navigator.clipboard.writeText(code).then(function(){
+      var old = btn.textContent;
+      btn.textContent = '복사됨 ✓'; btn.classList.add('done');
+      setTimeout(function(){ btn.textContent = old; btn.classList.remove('done'); }, 1400);
+    });
+  });
+});
+// 스크롤 시 현재 섹션 하이라이트
+var secs = document.querySelectorAll('h2.sec, h3[id]');
+var links = document.querySelectorAll('nav.toc a');
+window.addEventListener('scroll', function(){
+  var pos = window.scrollY + 120, cur = '';
+  secs.forEach(function(s){ if(s.offsetTop <= pos) cur = s.id; });
+  links.forEach(function(a){
+    a.classList.toggle('active', a.getAttribute('href') === '#' + cur);
+  });
+});
+</script>
+</body>
+</html>

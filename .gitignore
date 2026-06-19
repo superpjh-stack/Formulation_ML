@@ -1,0 +1,24 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+.venv/
+venv/
+dist/
+build/
+.pytest_cache/
+.ipynb_checkpoints/
+
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+models/artifacts/*
+*.pkl
+*.joblib
+
+# Tool directories
+.bkit/
+.claude/
+.omc/

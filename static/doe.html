@@ -1,0 +1,2077 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>실험계획법 (DOE) — Formulation ML</title>
+<script src="https://cdn.plot.ly/plotly-2.26.0.min.js"></script>
+<style>
+  /* ===== CSS RESET & BASE ===== */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --primary: #4F46E5;
+    --primary-hover: #4338CA;
+    --secondary: #7C3AED;
+    --accent: #06B6D4;
+    --success: #10B981;
+    --warning: #F59E0B;
+    --danger: #EF4444;
+    --bg-dark: #0F172A;
+    --bg-card: #1E293B;
+    --bg-panel: #334155;
+    --bg-hover: rgba(79,70,229,0.08);
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --border: #475569;
+    --border-subtle: #334155;
+    --font: 'Inter','Pretendard',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
+  html, body { height: 100%; font-family: var(--font); font-size: 14px; color: var(--text-primary); background: var(--bg-dark); overflow: hidden; }
+
+  /* ===== SCROLLBAR ===== */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--bg-dark); }
+  ::-webkit-scrollbar-thumb { background: var(--bg-panel); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--border); }
+
+  /* ===== HEADER ===== */
+  .header {
+    position: fixed; top: 0; left: 0; right: 0; height: 56px; z-index: 100;
+    background: var(--bg-card); border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; padding: 0 24px; gap: 16px;
+  }
+  .header-logo { font-size: 18px; font-weight: 700; letter-spacing: -0.025em; white-space: nowrap; }
+  .header-logo span { color: var(--primary); }
+  .header-spacer { flex: 1; }
+  .header-select {
+    background: var(--bg-panel); border: 1px solid var(--border); color: var(--text-primary);
+    border-radius: 6px; padding: 6px 12px; font-size: 13px; font-family: var(--font);
+    cursor: pointer; outline: none; min-width: 200px;
+  }
+  .header-select:focus { border-color: var(--primary); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 6px var(--success); }
+  .status-label { font-size: 12px; color: var(--text-secondary); }
+
+  /* ===== LAYOUT ===== */
+  .app { display: flex; height: 100vh; padding-top: 56px; }
+
+  /* ===== SIDEBAR ===== */
+  .sidebar {
+    width: 260px; min-width: 260px; height: calc(100vh - 56px);
+    background: var(--bg-card); border-right: 1px solid var(--border-subtle);
+    overflow-y: auto; padding: 12px 0;
+  }
+  .sidebar-group { margin-bottom: 4px; }
+  .sidebar-group-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; font-size: 11px; font-weight: 600;
+    color: var(--text-secondary); letter-spacing: 0.08em; text-transform: uppercase;
+    cursor: pointer; user-select: none; transition: color 0.15s;
+  }
+  .sidebar-group-header:hover { color: var(--text-primary); }
+  .sidebar-group-header .icon { font-size: 14px; }
+  .sidebar-group-header .chevron { margin-left: auto; font-size: 10px; transition: transform 0.2s; }
+  .sidebar-group.collapsed .chevron { transform: rotate(-90deg); }
+  .sidebar-group.collapsed .sidebar-items { display: none; }
+  .sidebar-items { padding: 2px 0; }
+  .sidebar-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 7px 16px 7px 36px; font-size: 13px; font-weight: 400;
+    color: var(--text-secondary); cursor: pointer; transition: all 0.15s;
+    border-left: 2px solid transparent; position: relative;
+  }
+  .sidebar-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .sidebar-item.active {
+    background: var(--bg-hover); color: var(--text-primary); font-weight: 500;
+    border-left-color: var(--primary);
+  }
+  .badge {
+    margin-left: auto; padding: 2px 7px; border-radius: 9999px;
+    font-size: 10px; font-weight: 600; letter-spacing: 0.03em;
+    background: var(--bg-panel); color: var(--text-secondary);
+  }
+  .badge.primary { background: rgba(79,70,229,0.2); color: #818CF8; }
+  .badge.success { background: rgba(16,185,129,0.15); color: #34D399; }
+  .badge.warning { background: rgba(245,158,11,0.15); color: #FCD34D; }
+  .badge.accent { background: rgba(6,182,212,0.15); color: #22D3EE; }
+
+  /* ===== MAIN CONTENT ===== */
+  .main { flex: 1; height: calc(100vh - 56px); overflow-y: auto; padding: 24px; }
+
+  /* ===== CARDS ===== */
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: 12px; padding: 20px 24px; margin-bottom: 20px;
+    transition: border-color 0.2s;
+  }
+  .card:hover { border-color: rgba(79,70,229,0.3); }
+  .card-header {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 16px; margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .card-title { font-size: 15px; font-weight: 600; }
+  .card-subtitle { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+  .card-actions { margin-left: auto; display: flex; gap: 8px; }
+
+  /* ===== BUTTONS ===== */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: none; border-radius: 6px; font-family: var(--font);
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    transition: all 0.15s; outline: none; white-space: nowrap;
+  }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; pointer-events: none; }
+  .btn-sm { padding: 6px 12px; font-size: 12px; }
+  .btn-md { padding: 8px 16px; }
+  .btn-lg { padding: 10px 20px; font-size: 15px; }
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); box-shadow: 0 4px 12px rgba(79,70,229,0.3); transform: translateY(-1px); }
+  .btn-secondary { background: transparent; color: var(--text-primary); border: 1px solid var(--border); }
+  .btn-secondary:hover { background: var(--bg-hover); border-color: var(--primary); }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-success:hover { background: #059669; box-shadow: 0 4px 12px rgba(16,185,129,0.3); transform: translateY(-1px); }
+  .btn-ghost { background: transparent; color: var(--text-secondary); }
+  .btn-ghost:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .btn-gradient { background: linear-gradient(135deg, var(--primary), var(--secondary)); color: #fff; }
+  .btn-gradient:hover { opacity: 0.9; box-shadow: 0 4px 16px rgba(79,70,229,0.4); transform: translateY(-1px); }
+
+  /* ===== FORM ===== */
+  .form-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
+  .form-group { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 140px; }
+  .form-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+  .form-input, .form-select {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    color: var(--text-primary); border-radius: 6px; padding: 8px 12px;
+    font-size: 13px; font-family: var(--font); outline: none; transition: border-color 0.15s;
+  }
+  .form-input:focus, .form-select:focus { border-color: var(--primary); }
+  .form-toggle { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .toggle-switch {
+    position: relative; width: 40px; height: 22px;
+    background: var(--bg-panel); border-radius: 11px; cursor: pointer;
+    transition: background 0.2s; border: 1px solid var(--border);
+  }
+  .toggle-switch.on { background: var(--primary); border-color: var(--primary); }
+  .toggle-switch::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; transition: transform 0.2s;
+  }
+  .toggle-switch.on::after { transform: translateX(18px); }
+  .toggle-label { font-size: 13px; color: var(--text-secondary); }
+
+  /* ===== TABLES ===== */
+  .table-wrap { overflow-x: auto; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    background: #0F172A; padding: 10px 14px; font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-secondary);
+    text-align: left; position: sticky; top: 0; z-index: 2; white-space: nowrap;
+  }
+  tbody tr { transition: background 0.1s; border-bottom: 1px solid rgba(71,85,105,0.3); }
+  tbody tr:hover { background: rgba(79,70,229,0.05); }
+  tbody td { padding: 9px 14px; font-size: 13px; }
+  td.num { font-family: 'Courier New', monospace; text-align: right; color: #93C5FD; }
+  tr.highlight-row { background: rgba(16,185,129,0.08); border-left: 3px solid var(--success); }
+
+  /* DOE matrix cell color */
+  .cell-neg { color: #60A5FA; background: rgba(96,165,250,0.08); }
+  .cell-zero { color: var(--text-secondary); }
+  .cell-pos { color: #F87171; background: rgba(248,113,113,0.08); }
+
+  /* ===== GRID ===== */
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+  @media (max-width: 1200px) { .grid-3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 900px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  /* ===== TABS ===== */
+  .tabs { display: flex; border-bottom: 1px solid var(--border-subtle); margin-bottom: 20px; gap: 0; }
+  .tab-item {
+    padding: 10px 18px; font-size: 13px; font-weight: 500; color: var(--text-secondary);
+    cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .tab-item:hover { color: var(--text-primary); background: var(--bg-hover); }
+  .tab-item.active { color: var(--text-primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+  /* ===== STAT / INFO ===== */
+  .stat-row { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 20px; }
+  .stat-card {
+    flex: 1; min-width: 120px; background: var(--bg-panel); border-radius: 10px;
+    padding: 14px 18px; border: 1px solid var(--border-subtle);
+  }
+  .stat-label { font-size: 11px; color: var(--text-secondary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em; }
+  .stat-value { font-size: 22px; font-weight: 700; color: var(--text-primary); margin-top: 4px; }
+  .stat-value.primary { color: #818CF8; }
+  .stat-value.success { color: #34D399; }
+  .stat-value.warning { color: #FCD34D; }
+  .stat-value.accent { color: #22D3EE; }
+
+  /* ===== TOP 5 CARDS ===== */
+  .rank-card {
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: 10px; padding: 16px 18px; display: flex; gap: 14px; align-items: flex-start;
+    transition: border-color 0.2s, transform 0.15s;
+  }
+  .rank-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+  .rank-medal { font-size: 28px; line-height: 1; flex-shrink: 0; }
+  .rank-info { flex: 1; }
+  .rank-score { font-size: 22px; font-weight: 700; color: #34D399; }
+  .rank-params { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.6; }
+  .rank-badge { display: inline-block; margin-top: 6px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; background: rgba(79,70,229,0.2); color: #818CF8; }
+
+  /* ===== LOADING ===== */
+  .loading-overlay {
+    position: absolute; inset: 0; background: rgba(15,23,42,0.75);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    border-radius: 12px; z-index: 10; gap: 12px;
+  }
+  .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { font-size: 13px; color: var(--text-secondary); }
+
+  /* ===== PLOTLY CHART CONTAINER ===== */
+  .chart-box {
+    background: var(--bg-card); border: 1px solid var(--border-subtle);
+    border-radius: 12px; padding: 0; overflow: hidden; position: relative;
+    min-height: 320px;
+  }
+  .chart-header {
+    padding: 14px 18px; border-bottom: 1px solid var(--border-subtle);
+    display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600;
+  }
+  .chart-body { padding: 4px; }
+
+  /* ===== PAGE SECTIONS ===== */
+  .page { display: none; }
+  .page.active { display: block; }
+
+  /* ===== INLINE EDITABLE TABLE ===== */
+  .factor-table input[type=number] {
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    color: var(--text-primary); border-radius: 4px; padding: 4px 8px;
+    font-size: 13px; font-family: var(--font); width: 80px; text-align: right;
+    transition: border-color 0.15s;
+  }
+  .factor-table input[type=number]:focus { outline: none; border-color: var(--primary); }
+  .factor-table select {
+    background: var(--bg-panel); border: 1px solid var(--border-subtle);
+    color: var(--text-primary); border-radius: 4px; padding: 4px 8px;
+    font-size: 13px; font-family: var(--font);
+  }
+
+  /* ===== NOTICE ===== */
+  .notice {
+    display: flex; gap: 10px; align-items: flex-start;
+    background: rgba(6,182,212,0.08); border: 1px solid rgba(6,182,212,0.2);
+    border-radius: 8px; padding: 12px 16px; font-size: 13px; color: var(--text-secondary);
+    margin-bottom: 16px;
+  }
+  .notice-icon { color: var(--accent); font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+  .notice.warn { background: rgba(245,158,11,0.08); border-color: rgba(245,158,11,0.2); }
+  .notice.warn .notice-icon { color: var(--warning); }
+
+  /* ===== ANOVA TABLE ===== */
+  .pval-sig { color: #F87171; font-weight: 600; }
+  .pval-ok { color: #34D399; }
+  .effect-bar { display: inline-block; height: 10px; border-radius: 5px; background: var(--primary); vertical-align: middle; margin-right: 8px; }
+
+  /* ===== FOOTER CREDITS ===== */
+  .footer-note { text-align: right; font-size: 11px; color: var(--border); margin-top: 8px; }
+
+  /* ===== MISC ===== */
+  .section-title { font-size: 16px; font-weight: 700; margin-bottom: 16px; color: var(--text-primary); letter-spacing: -0.02em; }
+  .flex-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .spacer { flex: 1; }
+  .divider { border: none; border-top: 1px solid var(--border-subtle); margin: 16px 0; }
+  .tag { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+  .tag-success { background: rgba(16,185,129,0.15); color: #34D399; }
+  .tag-danger { background: rgba(239,68,68,0.15); color: #F87171; }
+  .tag-warning { background: rgba(245,158,11,0.15); color: #FCD34D; }
+
+  /* ===== HIGHLIGHT on high quality ===== */
+  .q-high { color: #34D399; font-weight: 600; }
+  .q-mid { color: #FCD34D; }
+  .q-low { color: #F87171; }
+</style>
+</head>
+<body>
+
+<!-- ===== HEADER ===== -->
+<header class="header">
+  <div class="header-logo">🧪 <span>실험계획법</span> (DOE)</div>
+  <div class="header-spacer"></div>
+  <label style="font-size:12px;color:var(--text-secondary);margin-right:4px;">모델</label>
+  <select class="header-select" id="globalModel">
+    <option value="gradient_boosting">Gradient Boosting (추천)</option>
+    <option value="xgboost">XGBoost</option>
+    <option value="random_forest">Random Forest</option>
+    <option value="ridge">Ridge</option>
+  </select>
+  <div class="status-dot" id="statusDot"></div>
+  <span class="status-label" id="statusLabel">데모 모드</span>
+</header>
+
+<!-- ===== APP LAYOUT ===== -->
+<div class="app">
+
+  <!-- ===== SIDEBAR ===== -->
+  <nav class="sidebar" id="sidebar">
+    <!-- 실험 설계 -->
+    <div class="sidebar-group" id="grp-design">
+      <div class="sidebar-group-header" onclick="toggleGroup('design')">
+        <span class="icon">⚗️</span> 실험 설계
+        <span class="chevron">▾</span>
+      </div>
+      <div class="sidebar-items">
+        <div class="sidebar-item active" data-page="full_factorial" onclick="navigate('full_factorial')">
+          완전요인설계 <span class="badge primary">기본</span>
+        </div>
+        <div class="sidebar-item" data-page="fractional_factorial" onclick="navigate('fractional_factorial')">
+          부분요인설계 <span class="badge">효율</span>
+        </div>
+        <div class="sidebar-item" data-page="ccd" onclick="navigate('ccd')">
+          중심합성설계 (CCD) <span class="badge accent">RSM</span>
+        </div>
+        <div class="sidebar-item" data-page="box_behnken" onclick="navigate('box_behnken')">
+          박스-벤켄 설계 <span class="badge accent">RSM</span>
+        </div>
+        <div class="sidebar-item" data-page="taguchi" onclick="navigate('taguchi')">
+          다구치 방법 <span class="badge warning">강건</span>
+        </div>
+        <div class="sidebar-item" data-page="lhs" onclick="navigate('lhs')">
+          라틴 하이퍼큐브 <span class="badge">탐색</span>
+        </div>
+      </div>
+    </div>
+    <!-- ML 시뮬레이션 -->
+    <div class="sidebar-group" id="grp-simulation">
+      <div class="sidebar-group-header" onclick="toggleGroup('simulation')">
+        <span class="icon">🔬</span> ML 시뮬레이션
+        <span class="chevron">▾</span>
+      </div>
+      <div class="sidebar-items">
+        <div class="sidebar-item" data-page="batch_simulate" onclick="navigate('batch_simulate')">
+          배치 시뮬레이션 <span class="badge success">핵심</span>
+        </div>
+        <div class="sidebar-item" data-page="model_select" onclick="navigate('model_select')">
+          모델 선택 <span class="badge">설정</span>
+        </div>
+        <div class="sidebar-item" data-page="sensitivity" onclick="navigate('sensitivity')">
+          민감도 분석 <span class="badge">분석</span>
+        </div>
+        <div class="sidebar-item" data-page="monte_carlo" onclick="navigate('monte_carlo')">
+          몬테카를로 시뮬레이션 <span class="badge warning">고급</span>
+        </div>
+      </div>
+    </div>
+    <!-- 최적 조건 탐색 -->
+    <div class="sidebar-group" id="grp-optimization">
+      <div class="sidebar-group-header" onclick="toggleGroup('optimization')">
+        <span class="icon">🎯</span> 최적 조건 탐색
+        <span class="chevron">▾</span>
+      </div>
+      <div class="sidebar-items">
+        <div class="sidebar-item" data-page="single_objective" onclick="navigate('single_objective')">
+          단일목표 최적화 <span class="badge">기본</span>
+        </div>
+        <div class="sidebar-item" data-page="multi_objective" onclick="navigate('multi_objective')">
+          다목표 최적화 <span class="badge warning">고급</span>
+        </div>
+        <div class="sidebar-item" data-page="response_surface" onclick="navigate('response_surface')">
+          반응표면 탐색 <span class="badge accent">RSM</span>
+        </div>
+        <div class="sidebar-item" data-page="constraint_opt" onclick="navigate('constraint_opt')">
+          제약조건 최적화 <span class="badge">설정</span>
+        </div>
+      </div>
+    </div>
+    <!-- 결과 분석 -->
+    <div class="sidebar-group" id="grp-analysis">
+      <div class="sidebar-group-header" onclick="toggleGroup('analysis')">
+        <span class="icon">📊</span> 결과 분석
+        <span class="chevron">▾</span>
+      </div>
+      <div class="sidebar-items">
+        <div class="sidebar-item" data-page="main_effects" onclick="navigate('main_effects')">
+          주효과도 <span class="badge">기본</span>
+        </div>
+        <div class="sidebar-item" data-page="interaction" onclick="navigate('interaction')">
+          교호작용도 <span class="badge">분석</span>
+        </div>
+        <div class="sidebar-item" data-page="anova" onclick="navigate('anova')">
+          ANOVA 분석 <span class="badge accent">통계</span>
+        </div>
+        <div class="sidebar-item" data-page="pareto" onclick="navigate('pareto')">
+          파레토 차트 <span class="badge">시각화</span>
+        </div>
+        <div class="sidebar-item" data-page="compare" onclick="navigate('compare')">
+          이력 비교 <span class="badge accent">실데이터</span>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ===== MAIN CONTENT ===== -->
+  <main class="main" id="main">
+
+    <!-- ======== PAGE: 실험 설계 (공통 컴포넌트) ======== -->
+    <div class="page active" id="page-full_factorial">
+      <div class="section-title">⚗️ 완전요인설계 (Full Factorial Design)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>모든 인자의 모든 조합을 실험합니다. k인자 × 수준수 = 실험 횟수. 인자를 활성화하면 실험 수가 기하급수적으로 증가합니다.</span>
+      </div>
+      <div id="designFormArea"></div>
+      <div id="designResultArea"></div>
+    </div>
+
+    <div class="page" id="page-fractional_factorial">
+      <div class="section-title">⚗️ 부분요인설계 (Fractional Factorial Design)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>Resolution III~V 부분요인설계. 완전요인의 일부(1/2, 1/4)만 실행하여 효율적 스크리닝.</span>
+      </div>
+      <div id="designFormArea2"></div>
+      <div id="designResultArea2"></div>
+    </div>
+
+    <div class="page" id="page-ccd">
+      <div class="section-title">⚗️ 중심합성설계 (CCD)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>2수준 완전요인 + 중심점 + 축점(axial)으로 구성. 2차 반응표면 모델 적합에 최적.</span>
+      </div>
+      <div id="designFormArea3"></div>
+      <div id="designResultArea3"></div>
+    </div>
+
+    <div class="page" id="page-box_behnken">
+      <div class="section-title">⚗️ 박스-벤켄 설계 (Box-Behnken Design)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>꼭짓점 실험 없이 중심점과 모서리 중점만 사용. 극단값 조합 회피 시 유용.</span>
+      </div>
+      <div id="designFormArea4"></div>
+      <div id="designResultArea4"></div>
+    </div>
+
+    <div class="page" id="page-taguchi">
+      <div class="section-title">⚗️ 다구치 방법 (Taguchi Method)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>직교배열(L9, L18 등)을 사용하여 잡음 인자에 강건한 파라미터 설계.</span>
+      </div>
+      <div id="designFormArea5"></div>
+      <div id="designResultArea5"></div>
+    </div>
+
+    <div class="page" id="page-lhs">
+      <div class="section-title">⚗️ 라틴 하이퍼큐브 샘플링 (LHS)</div>
+      <div class="notice">
+        <span class="notice-icon">ℹ</span>
+        <span>각 인자의 분포를 균등하게 커버하는 확률적 설계. 고차원 탐색에 효율적.</span>
+      </div>
+      <div id="designFormArea6"></div>
+      <div id="designResultArea6"></div>
+    </div>
+
+    <!-- ======== PAGE: ML 시뮬레이션 ======== -->
+    <div class="page" id="page-batch_simulate">
+      <div class="section-title">🔬 배치 시뮬레이션</div>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">시뮬레이션 설정</div>
+            <div class="card-subtitle">설계 행렬에 ML 모델을 적용하여 품질 예측</div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">예측 모델</label>
+            <select class="form-select" id="simModel">
+              <option value="gradient_boosting">Gradient Boosting</option>
+              <option value="xgboost">XGBoost</option>
+              <option value="random_forest">Random Forest</option>
+              <option value="ridge">Ridge</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">공급사</label>
+            <select class="form-select" id="simSupplier">
+              <option value="SUP_A">SUP_A</option>
+              <option value="SUP_B">SUP_B</option>
+              <option value="SUP_C">SUP_C</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">실험 설계 방법</label>
+            <select class="form-select" id="simDesignMethod">
+              <option value="full_factorial">완전요인설계</option>
+              <option value="ccd">중심합성설계</option>
+              <option value="lhs">라틴 하이퍼큐브</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">샘플 수</label>
+            <input class="form-input" type="number" id="simNSamples" value="100" min="20" max="1000" step="10" title="생성할 실험 데이터 수 (20~1000)">
+          </div>
+          <div class="form-group">
+            <label class="form-label">노이즈 추가</label>
+            <div class="form-toggle">
+              <div class="toggle-switch" id="noiseToggle" onclick="toggleNoise()"></div>
+              <span class="toggle-label" id="noiseLabel">비활성</span>
+            </div>
+          </div>
+        </div>
+        <div class="flex-row" style="margin-top:8px;">
+          <button class="btn btn-gradient btn-lg" onclick="runSimulation()">
+            ▶ 시뮬레이션 실행
+          </button>
+          <button class="btn btn-secondary btn-md" onclick="loadSampleData()">
+            📥 샘플 데이터 (100+)
+          </button>
+        </div>
+      </div>
+      <div id="simResultArea"></div>
+    </div>
+
+    <div class="page" id="page-model_select">
+      <div class="section-title">🔬 모델 선택</div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">사용 가능한 ML 모델</div></div>
+        <div id="modelListArea">
+          <div class="notice"><span class="notice-icon">⟳</span><span>모델 목록 로드 중...</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page" id="page-sensitivity">
+      <div class="section-title">🔬 민감도 분석</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">인자 민감도 (One-at-a-time)</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="runSensitivity()">분석 실행</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">기준 SN%</label><input class="form-input" type="number" id="sens_sn" value="62" step="0.5"></div>
+          <div class="form-group"><label class="form-label">기준 AG%</label><input class="form-input" type="number" id="sens_ag" value="3.0" step="0.1"></div>
+          <div class="form-group"><label class="form-label">기준 CU%</label><input class="form-input" type="number" id="sens_cu" value="0.5" step="0.1"></div>
+          <div class="form-group"><label class="form-label">용해온도 (°C)</label><input class="form-input" type="number" id="sens_temp" value="260" step="5"></div>
+          <div class="form-group"><label class="form-label">가열시간 (min)</label><input class="form-input" type="number" id="sens_time" value="45" step="5"></div>
+        </div>
+      </div>
+      <div id="sensitivityChartArea"></div>
+    </div>
+
+    <div class="page" id="page-monte_carlo">
+      <div class="section-title">🔬 몬테카를로 시뮬레이션</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">불확실성 정량화</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="runMonteCarlo()">시뮬레이션 실행</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">반복 횟수</label><input class="form-input" type="number" id="mc_iters" value="500" step="100"></div>
+          <div class="form-group"><label class="form-label">노이즈 표준편차</label><input class="form-input" type="number" id="mc_noise" value="0.5" step="0.1"></div>
+          <div class="form-group"><label class="form-label">공급사</label><select class="form-select" id="mc_supplier"><option>SUP_A</option><option>SUP_B</option><option>SUP_C</option></select></div>
+        </div>
+      </div>
+      <div id="mcChartArea"></div>
+    </div>
+
+    <!-- ======== PAGE: 최적 조건 탐색 ======== -->
+    <div class="page" id="page-single_objective">
+      <div class="section-title">🎯 단일목표 최적화</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">품질점수 최대화</div>
+          <div class="card-subtitle">POST /doe/optimize — SLSQP 제약 최적화</div>
+          <div class="card-actions">
+            <button class="btn btn-gradient btn-md" onclick="runOptimize()">🎯 최적화 실행</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadOptSample()">샘플 로드</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">탐색 방법</label>
+            <select class="form-select" id="optMethod">
+              <option value="grid">Grid Search</option>
+              <option value="bayesian">Bayesian</option>
+              <option value="rsm">반응표면법 (RSM)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">공급사</label>
+            <select class="form-select" id="optSupplier">
+              <option>SUP_A</option><option>SUP_B</option><option>SUP_C</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">탐색 포인트 수</label>
+            <input class="form-input" type="number" id="optPoints" value="200" step="50">
+          </div>
+        </div>
+      </div>
+      <div id="optResultArea"></div>
+    </div>
+
+    <div class="page" id="page-multi_objective">
+      <div class="section-title">🎯 다목표 최적화 (Pareto Front)</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">품질점수 최대화 + 불량률 최소화</div>
+          <div class="card-actions">
+            <button class="btn btn-gradient btn-md" onclick="runMultiOpt()">파레토 탐색</button>
+          </div>
+        </div>
+      </div>
+      <div id="multiOptArea"></div>
+    </div>
+
+    <div class="page" id="page-response_surface">
+      <div class="section-title">🎯 반응표면 탐색</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">3D 반응표면 플롯</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="renderResponseSurface()">렌더링</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group"><label class="form-label">X축 인자</label><select class="form-select" id="rsm_x"><option value="sn_pct">sn_pct</option><option value="ag_pct">ag_pct</option><option value="melt_temp_c">melt_temp_c</option></select></div>
+          <div class="form-group"><label class="form-label">Y축 인자</label><select class="form-select" id="rsm_y"><option value="ag_pct">ag_pct</option><option value="melt_temp_c">melt_temp_c</option><option value="cu_pct">cu_pct</option></select></div>
+          <div class="form-group"><label class="form-label">고정 온도 (°C)</label><input class="form-input" type="number" id="rsm_temp" value="260" step="10"></div>
+        </div>
+      </div>
+      <div id="rsmArea"></div>
+    </div>
+
+    <div class="page" id="page-constraint_opt">
+      <div class="section-title">🎯 제약조건 최적화</div>
+      <div class="card">
+        <div class="card-header"><div class="card-title">성분 합계 제약: sn+ag+cu+pb ≈ 100%</div></div>
+        <div class="notice warn">
+          <span class="notice-icon">⚠</span>
+          <span>현재 시스템에 적용된 제약: SN 목표=62%, AG 목표=3%, CU 목표=0.5%, 합계=100%</span>
+        </div>
+        <table style="width:100%;border-collapse:collapse">
+          <thead><tr><th style="padding:10px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary);text-align:left">인자</th><th style="padding:10px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary)">목표값</th><th style="padding:10px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary)">허용 범위</th><th style="padding:10px 14px;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;color:var(--text-secondary)">우선순위</th></tr></thead>
+          <tbody>
+            <tr><td style="padding:9px 14px;font-size:13px">sn_pct (주석)</td><td class="num">62.0%</td><td class="num">58–66%</td><td><span class="tag tag-success">High</span></td></tr>
+            <tr><td style="padding:9px 14px;font-size:13px">ag_pct (은)</td><td class="num">3.0%</td><td class="num">2.5–3.5%</td><td><span class="tag tag-success">High</span></td></tr>
+            <tr><td style="padding:9px 14px;font-size:13px">cu_pct (구리)</td><td class="num">0.5%</td><td class="num">0.3–0.7%</td><td><span class="tag tag-warning">Medium</span></td></tr>
+            <tr><td style="padding:9px 14px;font-size:13px">pb_pct (납)</td><td class="num">Auto</td><td class="num">≥0%</td><td><span class="tag tag-danger">Derived</span></td></tr>
+            <tr><td style="padding:9px 14px;font-size:13px">melt_temp_c</td><td class="num">260°C</td><td class="num">200–320°C</td><td><span class="tag tag-warning">Medium</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ======== PAGE: 결과 분석 ======== -->
+    <div class="page" id="page-main_effects">
+      <div class="section-title">📊 주효과도 (Main Effects Plot)</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">각 인자의 품질점수에 대한 주효과</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="renderMainEffects()">분석 실행</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadAnalysisSample()">샘플 로드</button>
+          </div>
+        </div>
+      </div>
+      <div id="mainEffectsArea"></div>
+    </div>
+
+    <div class="page" id="page-interaction">
+      <div class="section-title">📊 교호작용도 (Interaction Plot)</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">인자 간 교호작용 분석</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="renderInteraction()">분석 실행</button>
+          </div>
+        </div>
+      </div>
+      <div id="interactionArea"></div>
+    </div>
+
+    <div class="page" id="page-anova">
+      <div class="section-title">📊 ANOVA 분석</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">분산분석표</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="renderAnova()">ANOVA 실행</button>
+            <button class="btn btn-secondary btn-sm" onclick="loadAnalysisSample()">샘플 로드</button>
+          </div>
+        </div>
+        <div id="anovaArea"></div>
+      </div>
+      <div id="anovaChartArea"></div>
+    </div>
+
+    <div class="page" id="page-pareto">
+      <div class="section-title">📊 파레토 차트</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">효과 크기 순 파레토 차트</div>
+          <div class="card-actions">
+            <button class="btn btn-primary btn-sm" onclick="renderPareto()">파레토 분석</button>
+          </div>
+        </div>
+      </div>
+      <div id="paretoArea"></div>
+    </div>
+
+    <!-- ======== PAGE: 이력 비교 ======== -->
+    <div class="page" id="page-compare">
+      <div class="section-title">🔍 실이력 vs DOE 최적 조건 비교</div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">공급사별 실생산 품질 통계 & SUPPLIER_EFFECTS 재보정</div>
+          <div class="card-actions">
+            <label style="font-size:12px;color:var(--text-secondary);margin-right:8px">이력 수:
+              <input type="number" id="compareLotCount" value="50" min="5" max="200"
+                style="width:60px;background:var(--bg-input);border:1px solid var(--border);color:var(--text-primary);border-radius:4px;padding:2px 6px">
+            </label>
+            <button class="btn btn-primary btn-sm" onclick="renderCompare()">이력 비교 실행</button>
+          </div>
+        </div>
+      </div>
+      <div id="compareArea" style="margin-top:16px"></div>
+    </div>
+
+  </main>
+</div>
+
+<!-- ===== DESIGN FORM TEMPLATE (dynamic) ===== -->
+<template id="tmpl-design-form">
+  <div class="card" id="factorCard">
+    <div class="card-header">
+      <div>
+        <div class="card-title">인자 설정</div>
+        <div class="card-subtitle">실험에 사용할 인자의 범위와 수준을 설정합니다</div>
+      </div>
+      <div class="card-actions" id="designActions"></div>
+    </div>
+    <div class="table-wrap">
+      <table class="factor-table" id="factorTable">
+        <thead>
+          <tr>
+            <th>활성</th><th>인자명</th><th>단위</th><th>최솟값</th><th>최댓값</th><th>수준 수</th><th>기본값</th>
+          </tr>
+        </thead>
+        <tbody id="factorBody"></tbody>
+      </table>
+    </div>
+    <div class="flex-row" style="margin-top:16px;gap:12px;flex-wrap:wrap;">
+      <div class="stat-card" style="flex:none;padding:10px 16px;">
+        <div class="stat-label">예상 실험 수</div>
+        <div class="stat-value primary" id="expCount">—</div>
+      </div>
+      <div class="spacer"></div>
+      <button class="btn btn-gradient btn-lg" id="genBtn">⚗️ 설계 생성</button>
+    </div>
+  </div>
+  <div id="matrixArea"></div>
+</template>
+
+<script>
+// ==============================
+//  GLOBAL STATE
+// ==============================
+const API_BASE = 'http://localhost:8000';
+let demoMode = true;
+let noiseOn = false;
+let lastDesign = null;
+let lastSimResult = null;
+
+const FACTORS_DEFAULT = [
+  { name: 'sn_pct',       unit: '%',   min: 58,  max: 66,  levels: 3, default: 62.0,  active: true },
+  { name: 'ag_pct',       unit: '%',   min: 2.5, max: 3.5, levels: 3, default: 3.0,   active: true },
+  { name: 'cu_pct',       unit: '%',   min: 0.3, max: 0.7, levels: 3, default: 0.5,   active: false },
+  { name: 'melt_temp_c',  unit: '°C',  min: 220, max: 300, levels: 3, default: 260,   active: true },
+  { name: 'melt_time_min',unit: 'min', min: 20,  max: 90,  levels: 3, default: 45,    active: false },
+];
+
+// ==============================
+//  API / DEMO HELPER
+// ==============================
+async function apiPost(path, body) {
+  try {
+    const r = await fetch(API_BASE + path, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body), signal: AbortSignal.timeout(8000)
+    });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    setOnline(true);
+    return await r.json();
+  } catch(e) {
+    setOnline(false);
+    return null;
+  }
+}
+async function apiGet(path) {
+  try {
+    const r = await fetch(API_BASE + path, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    setOnline(true);
+    return await r.json();
+  } catch(e) {
+    setOnline(false);
+    return null;
+  }
+}
+
+function setOnline(on) {
+  demoMode = !on;
+  document.getElementById('statusDot').style.background = on ? 'var(--success)' : 'var(--warning)';
+  document.getElementById('statusDot').style.boxShadow = on ? '0 0 6px var(--success)' : '0 0 6px var(--warning)';
+  document.getElementById('statusLabel').textContent = on ? 'API 연결됨' : '데모 모드';
+}
+
+// ==============================
+//  NAVIGATION
+// ==============================
+const DESIGN_PAGES = ['full_factorial','fractional_factorial','ccd','box_behnken','taguchi','lhs'];
+let currentPage = 'full_factorial';
+
+function navigate(id) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.sidebar-item').forEach(i => i.classList.remove('active'));
+  const page = document.getElementById('page-' + id);
+  if (page) page.classList.add('active');
+  const item = document.querySelector(`[data-page="${id}"]`);
+  if (item) item.classList.add('active');
+  currentPage = id;
+  if (DESIGN_PAGES.includes(id)) initDesignForm(id);
+  if (id === 'model_select') loadModels();
+  if (id === 'main_effects' || id === 'anova' || id === 'pareto' || id === 'interaction') renderAnalysisPage(id);
+  if (id === 'compare') renderCompare();
+  if (id === 'response_surface') renderResponseSurface();
+  if (id === 'sensitivity') renderSensitivity();
+  if (id === 'monte_carlo') renderMCPlaceholder();
+  if (id === 'multi_objective') renderMultiOpt();
+}
+
+function toggleGroup(grp) {
+  const el = document.getElementById('grp-' + grp);
+  el.classList.toggle('collapsed');
+}
+
+// ==============================
+//  DESIGN FORM (shared)
+// ==============================
+const DESIGN_AREA_MAP = {
+  full_factorial:'designFormArea', fractional_factorial:'designFormArea2',
+  ccd:'designFormArea3', box_behnken:'designFormArea4',
+  taguchi:'designFormArea5', lhs:'designFormArea6'
+};
+const DESIGN_RESULT_MAP = {
+  full_factorial:'designResultArea', fractional_factorial:'designResultArea2',
+  ccd:'designResultArea3', box_behnken:'designResultArea4',
+  taguchi:'designResultArea5', lhs:'designResultArea6'
+};
+
+function initDesignForm(method) {
+  const areaId = DESIGN_AREA_MAP[method];
+  const area = document.getElementById(areaId);
+  if (!area || area.children.length > 0) return;
+
+  // Clone template
+  const tmpl = document.getElementById('tmpl-design-form').content.cloneNode(true);
+  area.appendChild(tmpl);
+
+  const tbody = area.querySelector('#factorBody');
+  const extraConf = getMethodConfig(method);
+
+  FACTORS_DEFAULT.forEach((f, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="padding:8px 14px"><input type="checkbox" ${f.active?'checked':''} id="factive_${method}_${i}" onchange="calcExpCount('${method}')" style="accent-color:var(--primary);width:16px;height:16px;cursor:pointer"></td>
+      <td style="padding:8px 14px;font-size:13px;font-weight:500">${f.name}</td>
+      <td style="padding:8px 14px;font-size:12px;color:var(--text-secondary)">${f.unit}</td>
+      <td style="padding:8px 14px"><input type="number" id="fmin_${method}_${i}" value="${f.min}" step="0.1" onchange="calcExpCount('${method}')"></td>
+      <td style="padding:8px 14px"><input type="number" id="fmax_${method}_${i}" value="${f.max}" step="0.1" onchange="calcExpCount('${method}')"></td>
+      <td style="padding:8px 14px"><select id="flevels_${method}_${i}" onchange="calcExpCount('${method}')">${[2,3,4,5].map(n=>`<option value="${n}" ${f.levels===n?'selected':''}>${n}</option>`).join('')}</select></td>
+      <td style="padding:8px 14px;font-size:13px;color:var(--text-secondary)">${f.default}${f.unit}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // Method-specific extras
+  if (extraConf) {
+    const actions = area.querySelector('#designActions');
+    actions.innerHTML = extraConf.badge;
+  }
+
+  area.querySelector('#genBtn').textContent = `⚗️ ${getMethodLabel(method)} 생성`;
+  area.querySelector('#genBtn').onclick = () => generateDesign(method);
+  calcExpCount(method);
+}
+
+function getMethodLabel(m) {
+  return {full_factorial:'완전요인설계',fractional_factorial:'부분요인설계',ccd:'CCD 설계',box_behnken:'박스-벤켄 설계',taguchi:'다구치 설계',lhs:'LHS 설계'}[m] || '설계';
+}
+
+function getMethodConfig(m) {
+  const map = {
+    fractional_factorial: { badge: '<span class="badge accent">Resolution V</span>' },
+    ccd: { badge: '<span class="badge warning">α=1.414</span>' },
+    taguchi: { badge: '<span class="badge warning">L9 직교배열</span>' },
+    lhs: { badge: '<span class="badge accent">n=32 포인트</span>' },
+  };
+  return map[m] || null;
+}
+
+function getActiveFactors(method) {
+  return FACTORS_DEFAULT.map((f,i) => {
+    const chk = document.getElementById(`factive_${method}_${i}`);
+    if (!chk || !chk.checked) return null;
+    const min = parseFloat(document.getElementById(`fmin_${method}_${i}`)?.value ?? f.min);
+    const max = parseFloat(document.getElementById(`fmax_${method}_${i}`)?.value ?? f.max);
+    const levels = parseInt(document.getElementById(`flevels_${method}_${i}`)?.value ?? f.levels);
+    return { ...f, min, max, levels };
+  }).filter(Boolean);
+}
+
+function calcExpCount(method) {
+  const active = getActiveFactors(method);
+  const area = document.getElementById(DESIGN_AREA_MAP[method]);
+  if (!area) return;
+  const counter = area.querySelector('#expCount');
+  if (!counter) return;
+  let n = 0;
+  switch(method) {
+    case 'full_factorial': n = active.reduce((p, f) => p * f.levels, 1); break;
+    case 'fractional_factorial': n = Math.pow(2, Math.max(0, active.length - 1)); break;
+    case 'ccd': n = Math.pow(2, active.length) + 2 * active.length + 1; break;
+    case 'box_behnken': n = active.length >= 3 ? (4*(active.length*(active.length-1)/2) + 3) : 9; break;
+    case 'taguchi': n = active.length <= 4 ? 9 : 18; break;
+    case 'lhs': n = 32; break;
+    default: n = active.reduce((p, f) => p * f.levels, 1);
+  }
+  counter.textContent = n.toLocaleString();
+}
+
+// ==============================
+//  DESIGN GENERATION (demo + API)
+// ==============================
+async function generateDesign(method) {
+  const active = getActiveFactors(method);
+  if (!active.length) { alert('인자를 하나 이상 활성화하세요.'); return; }
+
+  const resultId = DESIGN_RESULT_MAP[method];
+  const resultArea = document.getElementById(resultId);
+  resultArea.innerHTML = '<div class="chart-box" style="min-height:120px;position:relative"><div class="loading-overlay"><div class="spinner"></div><span class="loading-text">설계 생성 중...</span></div></div>';
+
+  const payload = { method, factors: active.map(f=>({name:f.name,min:f.min,max:f.max,levels:f.levels})) };
+  let data = await apiPost('/doe/design', payload);
+  if (!data) data = generateDemoDesign(method, active);
+
+  lastDesign = data;
+  renderDesignMatrix(resultArea, data, method, active);
+}
+
+function generateDemoDesign(method, factors, n) {
+  n = n || 100;
+  const rows = [];
+  const suppliers = ['SUP_A','SUP_B','SUP_C'];
+
+  // LHS: 층화 랜덤 샘플링으로 n개 생성
+  function lhsSample(nPts) {
+    const out = [];
+    for (let i = 0; i < nPts; i++) {
+      const row = {};
+      factors.forEach(f => {
+        row[f.name] = +(f.min + (f.max - f.min) * ((i + Math.random()) / nPts)).toFixed(3);
+      });
+      row.supplier = suppliers[i % 3];
+      out.push(row);
+    }
+    // Fisher-Yates shuffle per column (true LHS)
+    factors.forEach(f => {
+      const vals = out.map(r => r[f.name]);
+      for (let i = vals.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [vals[i], vals[j]] = [vals[j], vals[i]];
+      }
+      out.forEach((r, i) => { r[f.name] = vals[i]; });
+    });
+    return out;
+  }
+
+  if (method === 'lhs') {
+    return { method, rows: lhsSample(n), n_experiments: n, factors };
+  }
+
+  // 구조적 설계 방법: 기본 설계점 생성 후 LHS로 n까지 보충
+  const combos = cartesian(factors.map(f => linspace(f.min, f.max, method==='ccd'?5:Math.max(2,f.levels||3))));
+  combos.forEach((combo, idx) => {
+    const row = {};
+    factors.forEach((f, i) => { row[f.name] = +combo[i].toFixed(3); });
+    row.supplier = suppliers[idx % 3];
+    rows.push(row);
+  });
+
+  // 부족분 LHS로 보충
+  if (rows.length < n) {
+    const extra = lhsSample(n - rows.length);
+    rows.push(...extra);
+  }
+
+  return { method, rows: rows.slice(0, n), n_experiments: Math.min(rows.length, n), factors };
+}
+
+function cartesian(arrays) {
+  return arrays.reduce((acc, arr) => acc.flatMap(a => arr.map(b => [...a, b])), [[]]);
+}
+function linspace(a, b, n) {
+  if (n <= 1) return [a];
+  return Array.from({length:n}, (_,i) => a + (b-a)*i/(n-1));
+}
+
+function renderDesignMatrix(container, data, method, factors) {
+  const rows = data.rows || data.design || [];
+  const cols = factors.map(f => f.name);
+
+  let html = `
+  <div class="card">
+    <div class="card-header">
+      <div><div class="card-title">실험 행렬</div><div class="card-subtitle">${demoMode?'[데모] ':''}${getMethodLabel(method)}</div></div>
+      <div class="card-actions">
+        <span class="badge success">${rows.length}개 실험</span>
+        <button class="btn btn-secondary btn-sm" onclick="exportCSV()">⬇ CSV</button>
+      </div>
+    </div>
+    <div class="table-wrap" style="max-height:380px;overflow-y:auto">
+      <table>
+        <thead><tr><th>#</th>${cols.map(c=>`<th>${c}</th>`).join('')}<th>코드값</th></tr></thead>
+        <tbody>
+  `;
+  rows.slice(0, 100).forEach((row, idx) => {
+    const cells = cols.map(c => {
+      const v = row[c] !== undefined ? row[c] : '—';
+      const f = factors.find(x => x.name === c);
+      let cls = '';
+      if (f) {
+        const mid = (f.min + f.max) / 2;
+        const range = f.max - f.min;
+        const norm = range > 0 ? (v - mid) / (range / 2) : 0;
+        if (norm < -0.4) cls = 'cell-neg';
+        else if (norm > 0.4) cls = 'cell-pos';
+        else cls = 'cell-zero';
+      }
+      return `<td class="num ${cls}">${typeof v === 'number' ? v.toFixed(3) : v}</td>`;
+    });
+    const codeVals = cols.map(c => {
+      const f = factors.find(x => x.name === c);
+      const v = row[c];
+      if (!f || v === undefined) return '?';
+      const mid = (f.min + f.max) / 2;
+      const half = (f.max - f.min) / 2;
+      const code = half > 0 ? (v - mid) / half : 0;
+      return code > 0.4 ? '<span style="color:#F87171">+1</span>' : code < -0.4 ? '<span style="color:#60A5FA">-1</span>' : '<span style="color:var(--text-secondary)"> 0</span>';
+    }).join(' ');
+    html += `<tr><td style="padding:9px 14px;font-size:12px;color:var(--text-secondary)">${idx+1}</td>${cells.join('')}<td style="padding:9px 14px;font-size:12px;font-family:monospace">${codeVals}</td></tr>`;
+  });
+  if (rows.length > 100) html += `<tr><td colspan="${cols.length+2}" style="padding:10px 14px;font-size:12px;color:var(--text-secondary);text-align:center">... 외 ${rows.length-100}개 행</td></tr>`;
+  html += `</tbody></table></div>`;
+
+  // Scatter plot preview
+  html += `</div><div class="grid-2" style="margin-top:0">`;
+  html += `<div class="chart-box"><div class="chart-header">📈 설계 공간 분포</div><div class="chart-body" id="designScatterPlot" style="height:280px"></div></div>`;
+  html += `<div class="chart-box"><div class="chart-header">📊 인자별 수준 히스토그램</div><div class="chart-body" id="designHistPlot" style="height:280px"></div></div>`;
+  html += `</div>`;
+
+  container.innerHTML = html;
+
+  // Render plots after DOM update
+  setTimeout(() => {
+    if (cols.length >= 2 && rows.length > 0) {
+      const xVals = rows.map(r => r[cols[0]]);
+      const yVals = rows.map(r => r[cols[1]]);
+      Plotly.newPlot('designScatterPlot', [{
+        x: xVals, y: yVals, mode: 'markers',
+        marker: { color: 'rgba(79,70,229,0.7)', size: 7, line:{color:'#818CF8',width:1} },
+        type: 'scatter', name: '실험점'
+      }], {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94A3B8', size: 11 }, margin: { l:45,r:20,t:20,b:45 },
+        xaxis: { title: cols[0], gridcolor:'#334155', zerolinecolor:'#334155', color:'#94A3B8' },
+        yaxis: { title: cols[1], gridcolor:'#334155', zerolinecolor:'#334155', color:'#94A3B8' }
+      }, { responsive: true, displayModeBar: false });
+
+      const histTraces = cols.slice(0,3).map((c,i) => ({
+        x: rows.map(r => r[c]), name: c, type: 'histogram', opacity: 0.7,
+        marker: { color: ['#818CF8','#34D399','#22D3EE'][i] }
+      }));
+      Plotly.newPlot('designHistPlot', histTraces, {
+        paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+        font: { color: '#94A3B8', size: 11 }, margin: { l:45,r:20,t:20,b:45 },
+        barmode: 'overlay', showlegend: true,
+        legend: { font:{color:'#94A3B8',size:10}, bgcolor:'transparent' },
+        xaxis: { gridcolor:'#334155', zerolinecolor:'#334155', color:'#94A3B8' },
+        yaxis: { title: '빈도', gridcolor:'#334155', zerolinecolor:'#334155', color:'#94A3B8' }
+      }, { responsive: true, displayModeBar: false });
+    }
+  }, 50);
+}
+
+// ==============================
+//  SIMULATION
+// ==============================
+function toggleNoise() {
+  noiseOn = !noiseOn;
+  document.getElementById('noiseToggle').classList.toggle('on', noiseOn);
+  document.getElementById('noiseLabel').textContent = noiseOn ? '활성 (σ=0.5)' : '비활성';
+}
+
+async function runSimulation() {
+  const model = document.getElementById('simModel').value;
+  const supplier = document.getElementById('simSupplier').value;
+  const designMethod = document.getElementById('simDesignMethod').value;
+
+  const resultArea = document.getElementById('simResultArea');
+  resultArea.innerHTML = '<div class="chart-box" style="min-height:160px;position:relative"><div class="loading-overlay"><div class="spinner"></div><span class="loading-text">ML 모델 추론 중...</span></div></div>';
+
+  // Generate design first
+  const nSamples = Math.max(20, Math.min(1000, parseInt(document.getElementById('simNSamples').value) || 100));
+  const activeFactors = FACTORS_DEFAULT.filter(f => f.active);
+  const designData = generateDemoDesign(designMethod, activeFactors, nSamples);
+
+  const payload = {
+    design: designData.rows,
+    model, supplier,
+    noise_std: noiseOn ? 0.5 : 0
+  };
+
+  let data = await apiPost('/doe/simulate', payload);
+  if (!data) data = generateDemoSimResult(designData.rows, model, supplier);
+
+  lastSimResult = data;
+  renderSimResult(resultArea, data, activeFactors);
+}
+
+function generateDemoSimResult(rows, model, supplier) {
+  const supplierBonus = {SUP_A:2, SUP_B:0, SUP_C:-1};
+  const bonus = supplierBonus[supplier] || 0;
+  return {
+    results: rows.map(r => {
+      const sn = r.sn_pct || 62;
+      const ag = r.ag_pct || 3;
+      const cu = r.cu_pct || 0.5;
+      const temp = r.melt_temp_c || 260;
+      const time = r.melt_time_min || 45;
+      const snDev = Math.abs(sn - 62), agDev = Math.abs(ag - 3), cuDev = Math.abs(cu - 0.5);
+      const tempEffect = -0.05 * Math.pow(temp - 265, 2) / 100;
+      const base = 80 - snDev * 2.5 - agDev * 5 - cuDev * 8 + tempEffect + bonus;
+      const q = Math.max(30, Math.min(99, base + (Math.random()-0.5)*6));
+      return {
+        ...r,
+        predicted_quality: +q.toFixed(2),
+        is_defect: q < 60 ? 1 : 0,
+        model, supplier
+      };
+    }),
+    model, supplier, n: rows.length
+  };
+}
+
+function renderSimResult(container, data, factors) {
+  const results = data.results || data.simulated_data || [];
+  const cols = factors.map(f => f.name);
+  const qs = results.map(r => +(r.predicted_quality||0));
+  const mean = qs.length ? (qs.reduce((s,v)=>s+v,0)/qs.length).toFixed(1) : '—';
+  const maxQ = qs.length ? Math.max(...qs).toFixed(1) : '—';
+  const nDefect = results.filter(r=>r.is_defect||r.predicted_quality<60).length;
+  const defectRate = qs.length ? (nDefect/qs.length*100).toFixed(1) : '0';
+
+  // 페이지 상태
+  let _page = 0;
+  const PAGE = 50;
+  const totalPages = Math.ceil(results.length / PAGE);
+
+  function tableHTML(page) {
+    const start = page * PAGE;
+    const slice = results.slice(start, start + PAGE);
+    let t = `<div class="table-wrap" style="max-height:400px;overflow-y:auto">
+      <table>
+        <thead><tr>
+          <th>#</th>
+          ${cols.map(c=>`<th>${c}</th>`).join('')}
+          <th>supplier</th>
+          <th>예측 품질점수</th>
+          <th>판정</th>
+        </tr></thead><tbody>`;
+    slice.forEach((r,i) => {
+      const idx = start + i + 1;
+      const q = +(r.predicted_quality||0);
+      const qClass = q>=85?'q-high':q>=70?'q-mid':'q-low';
+      const defect = r.is_defect || q < 60;
+      t += `<tr class="${defect?'highlight-row':''}">
+        <td style="padding:8px 12px;font-size:12px;color:var(--text-secondary)">${idx}</td>
+        ${cols.map(c=>`<td class="num">${r[c]!==undefined?(+r[c]).toFixed?.(+r[c]%1?2:0)||r[c]:r[c]:'—'}</td>`).join('')}
+        <td style="padding:8px 12px;font-size:12px">${r.supplier||'—'}</td>
+        <td class="num ${qClass}" style="font-size:14px;font-weight:700">${q.toFixed(1)}</td>
+        <td style="padding:8px 12px">${defect?'<span class="tag tag-danger">불량</span>':'<span class="tag tag-success">양품</span>'}</td>
+      </tr>`;
+    });
+    t += `</tbody></table></div>`;
+    return t;
+  }
+
+  function pagerHTML(page) {
+    if (totalPages <= 1) return '';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:10px 0;font-size:13px;color:var(--text-secondary)">
+      <button class="btn btn-secondary btn-sm" onclick="_simPrev()" ${page===0?'disabled':''}>◀ 이전</button>
+      <span>${page+1} / ${totalPages} 페이지 (총 ${results.length}개)</span>
+      <button class="btn btn-secondary btn-sm" onclick="_simNext()" ${page>=totalPages-1?'disabled':''}>다음 ▶</button>
+      <span style="margin-left:auto;color:var(--text-secondary);font-size:12px">페이지당 ${PAGE}행 표시</span>
+    </div>`;
+  }
+
+  function rebuild() {
+    document.getElementById('_simTableWrap').innerHTML = tableHTML(_page) + pagerHTML(_page);
+  }
+  window._simPrev = () => { if(_page>0){_page--;rebuild();} };
+  window._simNext = () => { if(_page<totalPages-1){_page++;rebuild();} };
+
+  let html = `
+  <div class="stat-row">
+    <div class="stat-card"><div class="stat-label">총 실험 수</div><div class="stat-value primary">${results.length}</div></div>
+    <div class="stat-card"><div class="stat-label">평균 품질점수</div><div class="stat-value success">${mean}</div></div>
+    <div class="stat-card"><div class="stat-label">최고 품질점수</div><div class="stat-value accent">${maxQ}</div></div>
+    <div class="stat-card"><div class="stat-label">불량 예측</div><div class="stat-value warning">${nDefect}건 (${defectRate}%)</div></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <div class="card-title">예측 결과 테이블</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="badge success">${demoMode?'데모':data.model||'데모'}</span>
+        <button class="btn btn-secondary btn-sm" onclick="exportSimCSV()">⬇ CSV</button>
+      </div>
+    </div>
+    <div id="_simTableWrap">${tableHTML(0)}${pagerHTML(0)}</div>
+  </div>
+  <div class="grid-2">
+    <div class="chart-box"><div class="chart-header">📊 품질점수 분포 (히스토그램)</div><div class="chart-body" id="simHistChart" style="height:280px"></div></div>
+    <div class="chart-box"><div class="chart-header">🔵 SN% vs 품질점수</div><div class="chart-body" id="simScatterChart" style="height:280px"></div></div>
+  </div>
+  <div class="grid-2">
+    <div class="chart-box"><div class="chart-header">📦 공급사별 품질 분포 (Box Plot)</div><div class="chart-body" id="simBoxChart" style="height:280px"></div></div>
+    <div class="chart-box"><div class="chart-header">🌡️ 온도 vs 품질점수</div><div class="chart-body" id="simTempChart" style="height:280px"></div></div>
+  </div>`;
+
+  container.innerHTML = html;
+
+  // CSV export
+  window.exportSimCSV = () => {
+    const allCols = [...cols, 'supplier', 'predicted_quality', 'is_defect'];
+    const header = allCols.join(',');
+    const rows2 = results.map(r => allCols.map(c => r[c]!==undefined?r[c]:'').join(','));
+    const blob = new Blob([header+'\n'+rows2.join('\n')], {type:'text/csv'});
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+    a.download = 'doe_simulation.csv'; a.click();
+  };
+
+  setTimeout(() => {
+    const layout = (xTitle, yTitle) => ({
+      paper_bgcolor:'transparent', plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11}, margin:{l:50,r:20,t:20,b:50},
+      xaxis:{title:xTitle,gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:yTitle,gridcolor:'#334155',color:'#94A3B8'},
+      legend:{font:{color:'#94A3B8'}}
+    });
+    const cfg = {responsive:true,displayModeBar:false};
+
+    // 히스토그램
+    Plotly.newPlot('simHistChart',[{
+      x:qs, type:'histogram',
+      marker:{color:'rgba(79,70,229,0.75)',line:{color:'#818CF8',width:1}},
+      nbinsx:25, name:'품질점수'
+    }], layout('품질점수','빈도'), cfg);
+
+    // SN scatter (컬러맵)
+    const snVals = results.map(r=>+(r.sn_pct||62));
+    Plotly.newPlot('simScatterChart',[{
+      x:snVals, y:qs, mode:'markers', type:'scatter',
+      marker:{color:qs,colorscale:'Viridis',size:6,opacity:0.8,
+        showscale:true,colorbar:{title:'품질',tickfont:{color:'#94A3B8'},titlefont:{color:'#94A3B8'},len:0.8}}
+    }], layout('sn_pct (%)','예측 품질점수'), cfg);
+
+    // Box plot per supplier
+    const supList = ['SUP_A','SUP_B','SUP_C'];
+    const boxTraces = supList.map(s=>({
+      y: results.filter(r=>r.supplier===s).map(r=>+(r.predicted_quality||0)),
+      name:s, type:'box', boxpoints:'outliers',
+      marker:{size:4}, line:{width:1.5}
+    }));
+    Plotly.newPlot('simBoxChart', boxTraces, {
+      ...layout('공급사','품질점수'),
+      xaxis:{...layout().xaxis,title:'공급사'}
+    }, cfg);
+
+    // Temp scatter
+    const tempVals = results.map(r=>+(r.melt_temp_c||250));
+    const tempColors = qs;
+    Plotly.newPlot('simTempChart',[{
+      x:tempVals, y:qs, mode:'markers', type:'scatter',
+      marker:{color:tempColors,colorscale:'RdYlGn',size:6,opacity:0.8,
+        showscale:true,colorbar:{title:'품질',tickfont:{color:'#94A3B8'},titlefont:{color:'#94A3B8'},len:0.8}}
+    }], layout('용해온도 (°C)','예측 품질점수'), cfg);
+  }, 60);
+}
+
+async function loadSampleData() {
+  const nSamples = Math.max(20, Math.min(1000, parseInt(document.getElementById('simNSamples').value) || 100));
+  const resultArea = document.getElementById('simResultArea');
+  resultArea.innerHTML = '<div class="chart-box" style="min-height:100px;position:relative"><div class="loading-overlay"><div class="spinner"></div><span class="loading-text">샘플 데이터 생성 중 (' + nSamples + '개)...</span></div></div>';
+  let data = await apiGet('/doe/sample?method=lhs&n_points=' + nSamples);
+  if (data && data.simulated_data) {
+    // API 응답을 renderSimResult 형식으로 변환
+    data = { results: data.simulated_data, model: '결정론적 모델', supplier: '혼합', n: data.n_experiments, summary: data.summary };
+  } else {
+    const activeFactors = FACTORS_DEFAULT.filter(f => f.active);
+    const design = generateDemoDesign('lhs', activeFactors, nSamples);
+    data = generateDemoSimResult(design.rows, 'gradient_boosting', 'MIXED');
+  }
+  lastSimResult = data;
+  renderSimResult(resultArea, data, FACTORS_DEFAULT.filter(f => f.active));
+}
+
+// ==============================
+//  OPTIMIZATION
+// ==============================
+async function runOptimize() {
+  const method = document.getElementById('optMethod').value;
+  const supplier = document.getElementById('optSupplier').value;
+  const n = parseInt(document.getElementById('optPoints').value) || 200;
+  const resultArea = document.getElementById('optResultArea');
+  resultArea.innerHTML = '<div class="chart-box" style="min-height:120px;position:relative"><div class="loading-overlay"><div class="spinner"></div><span class="loading-text">최적 조건 탐색 중...</span></div></div>';
+
+  // Generate dense search grid
+  const activeFactors = FACTORS_DEFAULT.filter(f => f.active);
+  const design = generateDemoDesign('lhs', [...activeFactors.map(f=>({...f,levels:5}))].slice(0,3));
+  const simData = generateDemoSimResult(design.rows.slice(0,n), 'gradient_boosting', supplier);
+  const sorted = simData.results.sort((a,b) => b.predicted_quality - a.predicted_quality);
+  renderOptResult(resultArea, sorted.slice(0,5), sorted, activeFactors);
+}
+
+async function loadOptSample() { await runOptimize(); }
+
+function renderOptResult(container, top5, allResults, factors) {
+  const medals = ['🥇','🥈','🥉','4️⃣','5️⃣'];
+  const cols = factors.map(f => f.name);
+
+  let html = `<div class="section-title" style="margin-top:0">🏆 TOP 5 최적 조건</div>`;
+  html += `<div style="display:flex;flex-direction:column;gap:12px;margin-bottom:24px">`;
+  top5.forEach((r,i) => {
+    const paramStr = cols.map(c => `${c}=${r[c]||'—'}`).join(' · ');
+    html += `<div class="rank-card">
+      <div class="rank-medal">${medals[i]}</div>
+      <div class="rank-info">
+        <div class="rank-score">${(r.predicted_quality||0).toFixed(2)}점</div>
+        <div class="rank-params">${paramStr}</div>
+        <span class="rank-badge">#${i+1} Rank</span>
+        ${r.is_defect ? '<span class="tag tag-danger" style="margin-left:8px">불량 위험</span>' : '<span class="tag tag-success" style="margin-left:8px">양품 예측</span>'}
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+
+  html += `<div class="grid-2">
+    <div class="chart-box"><div class="chart-header">🔥 품질점수 분포 (최적화 결과)</div><div class="chart-body" id="optHist" style="height:300px"></div></div>
+    <div class="chart-box"><div class="chart-header">📉 등고선도 (SN% × AG% → 품질)</div><div class="chart-body" id="optContour" style="height:300px"></div></div>
+  </div>`;
+
+  container.innerHTML = html;
+
+  setTimeout(() => {
+    const qs = allResults.map(r => r.predicted_quality||0);
+    Plotly.newPlot('optHist', [{x:qs,type:'histogram',marker:{color:'rgba(16,185,129,0.7)',line:{color:'#34D399',width:1}}}], {
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',font:{color:'#94A3B8',size:11},
+      margin:{l:45,r:15,t:15,b:45},
+      xaxis:{title:'품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'빈도',gridcolor:'#334155',color:'#94A3B8'},
+      shapes:[{type:'line',x0:top5[0].predicted_quality,x1:top5[0].predicted_quality,y0:0,y1:1,yref:'paper',line:{color:'#FCD34D',width:2,dash:'dot'}}]
+    },{responsive:true,displayModeBar:false});
+
+    // Contour
+    const snRange = linspace(58,66,20), agRange = linspace(2.5,3.5,20);
+    const zMatrix = snRange.map(sn => agRange.map(ag => {
+      const snD = Math.abs(sn-62), agD = Math.abs(ag-3);
+      return +(80 - snD*2.5 - agD*5 + (Math.random()-0.5)*2).toFixed(1);
+    }));
+    Plotly.newPlot('optContour',[{z:zMatrix,x:agRange,y:snRange,type:'contour',colorscale:'Viridis',
+      contours:{showlabels:true,labelfont:{size:10,color:'white'}},
+      colorbar:{title:'품질점수',tickfont:{color:'#94A3B8'},titlefont:{color:'#94A3B8'}}
+    }],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',font:{color:'#94A3B8',size:11},
+      margin:{l:45,r:60,t:15,b:45},
+      xaxis:{title:'ag_pct (%)',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'sn_pct (%)',gridcolor:'#334155',color:'#94A3B8'}
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  RESPONSE SURFACE (3D)
+// ==============================
+function renderResponseSurface() {
+  const xFactor = document.getElementById('rsm_x')?.value || 'sn_pct';
+  const yFactor = document.getElementById('rsm_y')?.value || 'ag_pct';
+  const fixedTemp = parseFloat(document.getElementById('rsm_temp')?.value || 260);
+
+  const area = document.getElementById('rsmArea');
+  if (!area) return;
+  area.innerHTML = `<div class="grid-2">
+    <div class="chart-box"><div class="chart-header">🌐 3D 반응표면</div><div class="chart-body" id="rsm3d" style="height:420px"></div></div>
+    <div class="chart-box"><div class="chart-header">📉 등고선도</div><div class="chart-body" id="rsmContour" style="height:420px"></div></div>
+  </div>`;
+
+  setTimeout(() => {
+    const FACTOR_RANGES = {
+      sn_pct:[58,66], ag_pct:[2.5,3.5], cu_pct:[0.3,0.7],
+      melt_temp_c:[220,300], melt_time_min:[20,90]
+    };
+    const xr = FACTOR_RANGES[xFactor] || [0,1];
+    const yr = FACTOR_RANGES[yFactor] || [0,1];
+    const xArr = linspace(xr[0],xr[1],25);
+    const yArr = linspace(yr[0],yr[1],25);
+
+    function qualityModel(x, y) {
+      // Deterministic simplified quality model
+      let score = 80;
+      if (xFactor==='sn_pct') score -= Math.abs(x-62)*2.5;
+      else if (xFactor==='ag_pct') score -= Math.abs(x-3)*5;
+      else if (xFactor==='melt_temp_c') score -= Math.pow(x-265,2)*0.003;
+      if (yFactor==='ag_pct') score -= Math.abs(y-3)*5;
+      else if (yFactor==='melt_temp_c') score -= Math.pow(y-265,2)*0.003;
+      else if (yFactor==='cu_pct') score -= Math.abs(y-0.5)*8;
+      return Math.max(40, Math.min(98, score));
+    }
+
+    const z = xArr.map(x => yArr.map(y => qualityModel(x,y)));
+
+    Plotly.newPlot('rsm3d',[{x:xArr,y:yArr,z:z,type:'surface',
+      colorscale:'Viridis',
+      colorbar:{title:'품질점수',tickfont:{color:'#94A3B8'},titlefont:{color:'#94A3B8'}}
+    }],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:0,r:0,t:20,b:0},
+      scene:{
+        xaxis:{title:xFactor,gridcolor:'#334155',color:'#94A3B8',backgroundcolor:'rgba(15,23,42,0.5)'},
+        yaxis:{title:yFactor,gridcolor:'#334155',color:'#94A3B8',backgroundcolor:'rgba(15,23,42,0.5)'},
+        zaxis:{title:'품질점수',gridcolor:'#334155',color:'#94A3B8',backgroundcolor:'rgba(15,23,42,0.5)'},
+        bgcolor:'rgba(15,23,42,0.3)'
+      }
+    },{responsive:true,displayModeBar:true,modeBarButtonsToRemove:['toImage']});
+
+    Plotly.newPlot('rsmContour',[{x:xArr,y:yArr,z:z,type:'contour',colorscale:'Viridis',
+      contours:{showlabels:true,labelfont:{size:10,color:'white'}},
+      colorbar:{title:'품질점수',tickfont:{color:'#94A3B8'},titlefont:{color:'#94A3B8'}}
+    }],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:50,r:70,t:20,b:50},
+      xaxis:{title:xFactor,gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:yFactor,gridcolor:'#334155',color:'#94A3B8'}
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  SENSITIVITY ANALYSIS
+// ==============================
+function renderSensitivity() {
+  renderSensitivityChart({
+    sn_pct: parseFloat(document.getElementById('sens_sn')?.value||62),
+    ag_pct: parseFloat(document.getElementById('sens_ag')?.value||3),
+    cu_pct: parseFloat(document.getElementById('sens_cu')?.value||0.5),
+    melt_temp_c: parseFloat(document.getElementById('sens_temp')?.value||260),
+    melt_time_min: parseFloat(document.getElementById('sens_time')?.value||45),
+  });
+}
+
+async function runSensitivity() { renderSensitivity(); }
+
+function renderSensitivityChart(base) {
+  const area = document.getElementById('sensitivityChartArea');
+  if (!area) return;
+  area.innerHTML = `<div class="chart-box"><div class="chart-header">📊 민감도 분석 결과 (OAT)</div><div class="chart-body" id="sensChart" style="height:400px"></div></div>`;
+
+  const FACTORS_INFO = [
+    { name:'sn_pct', range:[-4,-2,0,2,4], label:'SN% 편차' },
+    { name:'ag_pct', range:[-0.5,-0.25,0,0.25,0.5], label:'AG% 편차' },
+    { name:'cu_pct', range:[-0.2,-0.1,0,0.1,0.2], label:'CU% 편차' },
+    { name:'melt_temp_c', range:[-40,-20,0,20,40], label:'온도 편차 (°C)' },
+    { name:'melt_time_min', range:[-25,-12.5,0,12.5,25], label:'시간 편차 (min)' },
+  ];
+
+  function qualityAt(overrides) {
+    const v = {...base, ...overrides};
+    return Math.max(40,Math.min(98, 80 - Math.abs(v.sn_pct-62)*2.5 - Math.abs(v.ag_pct-3)*5
+      - Math.abs(v.cu_pct-0.5)*8 - Math.pow(v.melt_temp_c-265,2)*0.003));
+  }
+
+  setTimeout(() => {
+    const traces = FACTORS_INFO.map((fi, idx) => ({
+      x: fi.range,
+      y: fi.range.map(delta => {
+        const ov = {}; ov[fi.name] = base[fi.name] + delta;
+        return qualityAt(ov);
+      }),
+      name: fi.label, mode: 'lines+markers', type: 'scatter',
+      line:{color:['#818CF8','#34D399','#22D3EE','#FCD34D','#F87171'][idx],width:2},
+      marker:{size:6}
+    }));
+
+    Plotly.newPlot('sensChart', traces, {
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:50,r:20,t:20,b:50},
+      xaxis:{title:'인자 편차',gridcolor:'#334155',zerolinecolor:'#475569',color:'#94A3B8'},
+      yaxis:{title:'예측 품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      legend:{font:{color:'#94A3B8',size:11},bgcolor:'transparent'},
+      hovermode:'x unified'
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  MONTE CARLO
+// ==============================
+function renderMCPlaceholder() {
+  const area = document.getElementById('mcChartArea');
+  if (!area) return;
+  area.innerHTML = `<div class="chart-box"><div class="chart-header">📊 품질점수 분포 (몬테카를로)</div><div class="chart-body" id="mcChart" style="height:380px"></div></div>`;
+}
+
+async function runMonteCarlo() {
+  const iters = parseInt(document.getElementById('mc_iters').value) || 500;
+  const noise = parseFloat(document.getElementById('mc_noise').value) || 0.5;
+
+  const area = document.getElementById('mcChartArea');
+  area.innerHTML = '<div class="chart-box" style="min-height:120px;position:relative"><div class="loading-overlay"><div class="spinner"></div><span class="loading-text">몬테카를로 시뮬레이션 중...</span></div></div>';
+
+  // Demo: generate iters samples
+  const results = Array.from({length:iters}, () => {
+    const sn = 62 + (Math.random()-0.5)*noise*4;
+    const ag = 3 + (Math.random()-0.5)*noise*2;
+    const cu = 0.5 + (Math.random()-0.5)*noise*0.4;
+    const temp = 260 + (Math.random()-0.5)*noise*20;
+    const q = Math.max(30,Math.min(99, 80 - Math.abs(sn-62)*2.5 - Math.abs(ag-3)*5 - Math.abs(cu-0.5)*8 - Math.pow(temp-265,2)*0.003 + (Math.random()-0.5)*4));
+    return q;
+  });
+
+  const mean = results.reduce((s,v)=>s+v,0)/results.length;
+  const std = Math.sqrt(results.reduce((s,v)=>s+Math.pow(v-mean,2),0)/results.length);
+  const defectRate = results.filter(v=>v<60).length/results.length*100;
+
+  area.innerHTML = `
+  <div class="stat-row">
+    <div class="stat-card"><div class="stat-label">평균 품질점수</div><div class="stat-value success">${mean.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="stat-label">표준편차</div><div class="stat-value primary">${std.toFixed(2)}</div></div>
+    <div class="stat-card"><div class="stat-label">불량률 예측</div><div class="stat-value warning">${defectRate.toFixed(1)}%</div></div>
+    <div class="stat-card"><div class="stat-label">시뮬레이션 횟수</div><div class="stat-value accent">${iters.toLocaleString()}</div></div>
+  </div>
+  <div class="grid-2">
+    <div class="chart-box"><div class="chart-header">📊 품질점수 분포 (히스토그램)</div><div class="chart-body" id="mcHist" style="height:320px"></div></div>
+    <div class="chart-box"><div class="chart-header">📈 누적분포함수 (CDF)</div><div class="chart-body" id="mcCdf" style="height:320px"></div></div>
+  </div>`;
+
+  setTimeout(() => {
+    Plotly.newPlot('mcHist',[
+      {x:results,type:'histogram',marker:{color:'rgba(79,70,229,0.7)',line:{color:'#818CF8',width:1}},nbinsx:30,name:'품질점수'},
+    ],[{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:45,r:15,t:15,b:45},
+      xaxis:{title:'품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'빈도',gridcolor:'#334155',color:'#94A3B8'},
+      shapes:[
+        {type:'line',x0:mean,x1:mean,y0:0,y1:1,yref:'paper',line:{color:'#34D399',width:2,dash:'dash'}},
+        {type:'line',x0:60,x1:60,y0:0,y1:1,yref:'paper',line:{color:'#EF4444',width:1,dash:'dot'}}
+      ]
+    }[0]],[{responsive:true,displayModeBar:false}][0]);
+
+    const sorted = [...results].sort((a,b)=>a-b);
+    const cdf = sorted.map((_,i)=>(i+1)/sorted.length*100);
+    Plotly.newPlot('mcCdf',[{x:sorted,y:cdf,mode:'lines',type:'scatter',line:{color:'#22D3EE',width:2}}],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:45,r:15,t:15,b:45},
+      xaxis:{title:'품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'누적 확률 (%)',gridcolor:'#334155',color:'#94A3B8'},
+      shapes:[{type:'line',x0:60,x1:60,y0:0,y1:100,line:{color:'#EF4444',width:1,dash:'dot'}}]
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  MULTI OBJECTIVE
+// ==============================
+function renderMultiOpt() {
+  const area = document.getElementById('multiOptArea');
+  if (!area) return;
+
+  const n = 200;
+  const points = Array.from({length:n}, () => {
+    const sn = 58 + Math.random()*8;
+    const ag = 2.5 + Math.random();
+    const q = Math.max(30,Math.min(99, 80 - Math.abs(sn-62)*2.5 - Math.abs(ag-3)*5 + (Math.random()-0.5)*10));
+    const defect = Math.max(0,Math.min(1,(100-q)/100*0.8 + Math.random()*0.1));
+    return {q, defect, sn, ag};
+  });
+
+  // Pareto front
+  const pareto = points.filter(p =>
+    !points.some(q => q.q > p.q && q.defect < p.defect)
+  ).sort((a,b) => a.defect - b.defect);
+
+  area.innerHTML = `<div class="chart-box"><div class="chart-header">🔷 파레토 프론트 (품질 vs 불량률)</div><div class="chart-body" id="multiOptChart" style="height:440px"></div></div>`;
+
+  setTimeout(() => {
+    Plotly.newPlot('multiOptChart',[
+      {x:points.map(p=>p.defect),y:points.map(p=>p.q),mode:'markers',name:'후보 실험점',
+       marker:{color:'rgba(79,70,229,0.4)',size:6}},
+      {x:pareto.map(p=>p.defect),y:pareto.map(p=>p.q),mode:'lines+markers',name:'파레토 프론트',
+       line:{color:'#34D399',width:2},marker:{color:'#34D399',size:9,symbol:'diamond'}}
+    ],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:50,r:20,t:20,b:50},
+      xaxis:{title:'불량률',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      legend:{font:{color:'#94A3B8',size:11},bgcolor:'transparent'}
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  ANALYSIS PAGES
+// ==============================
+let analysisSampleData = null;
+
+async function loadAnalysisSample() {
+  const n = 100;
+  const activeFactors = FACTORS_DEFAULT.filter(f => f.active);
+  const design = generateDemoDesign('full_factorial', activeFactors);
+  const sim = generateDemoSimResult(design.rows.slice(0,n), 'gradient_boosting', 'SUP_A');
+  analysisSampleData = sim.results;
+  renderAnalysisPage(currentPage);
+}
+
+function renderAnalysisPage(id) {
+  if (!analysisSampleData) {
+    loadAnalysisSample();
+    return;
+  }
+  if (id === 'main_effects') renderMainEffects();
+  if (id === 'anova') renderAnova();
+  if (id === 'pareto') renderPareto();
+  if (id === 'interaction') renderInteraction();
+  if (id === 'compare') renderCompare();
+}
+
+function renderMainEffects() {
+  if (!analysisSampleData) { loadAnalysisSample(); return; }
+  const area = document.getElementById('mainEffectsArea');
+  if (!area) return;
+
+  const factors = ['sn_pct','ag_pct','melt_temp_c'];
+  area.innerHTML = `<div class="grid-2">` +
+    factors.map((f,i) => `<div class="chart-box"><div class="chart-header">📊 ${f} 주효과</div><div class="chart-body" id="me_${i}" style="height:280px"></div></div>`).join('') +
+  `<div class="chart-box"><div class="chart-header">📊 주효과 크기 요약</div><div class="chart-body" id="me_summary" style="height:280px"></div></div></div>`;
+
+  setTimeout(() => {
+    factors.forEach((fname, idx) => {
+      const vals = [...new Set(analysisSampleData.map(r => r[fname]).filter(v=>v!==undefined))].sort((a,b)=>a-b);
+      const means = vals.map(v => {
+        const group = analysisSampleData.filter(r => Math.abs((r[fname]||0)-v) < 0.01);
+        return group.length ? group.reduce((s,r)=>s+(r.predicted_quality||0),0)/group.length : 0;
+      });
+      Plotly.newPlot(`me_${idx}`,[{
+        x:vals,y:means,mode:'lines+markers',type:'scatter',
+        line:{color:['#818CF8','#34D399','#22D3EE'][idx],width:2},
+        marker:{size:8,color:['#818CF8','#34D399','#22D3EE'][idx]}
+      }],{
+        paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+        font:{color:'#94A3B8',size:11},margin:{l:45,r:15,t:15,b:45},
+        xaxis:{title:fname,gridcolor:'#334155',color:'#94A3B8'},
+        yaxis:{title:'평균 품질점수',gridcolor:'#334155',color:'#94A3B8'}
+      },{responsive:true,displayModeBar:false});
+    });
+
+    // Summary bar
+    const effects = factors.map(fname => {
+      const vals = analysisSampleData.map(r=>r[fname]).filter(v=>v!==undefined);
+      const qs = analysisSampleData.map(r=>r.predicted_quality||0);
+      const mean = qs.reduce((s,v)=>s+v,0)/qs.length;
+      return Math.abs(qs.reduce((s,v,i)=>{
+        const centered = (vals[i]-(vals.reduce((a,b)=>a+b,0)/vals.length));
+        return s+centered*v;
+      },0)) / (qs.length * mean + 1) * 100;
+    });
+    Plotly.newPlot('me_summary',[{
+      x:factors,y:effects,type:'bar',
+      marker:{color:['#818CF8','#34D399','#22D3EE'],opacity:0.85}
+    }],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:45,r:15,t:15,b:60},
+      xaxis:{gridcolor:'#334155',color:'#94A3B8',tickangle:-20},
+      yaxis:{title:'효과 크기 (%)',gridcolor:'#334155',color:'#94A3B8'}
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+function renderAnova() {
+  if (!analysisSampleData) { loadAnalysisSample(); return; }
+  const area = document.getElementById('anovaArea');
+  if (!area) return;
+
+  const factors = ['sn_pct','ag_pct','cu_pct','melt_temp_c','melt_time_min'];
+  const grandMean = analysisSampleData.reduce((s,r)=>s+(r.predicted_quality||0),0)/analysisSampleData.length;
+  const totalSS = analysisSampleData.reduce((s,r)=>s+Math.pow((r.predicted_quality||0)-grandMean,2),0);
+
+  // 1-pass: 공분산 기반 SS (response와의 선형 관계 크기)
+  const _aN = analysisSampleData.length;
+  const _aQs = analysisSampleData.map(r=>r.predicted_quality||0);
+  const rawSS = factors.map(f => {
+    const vals = analysisSampleData.map(r=>r[f]||0);
+    const vMean = vals.reduce((s,v)=>s+v,0)/_aN;
+    const cov = vals.reduce((s,v,i)=>s+(v-vMean)*(_aQs[i]-grandMean),0)/_aN;
+    const varF = vals.reduce((s,v)=>s+(v-vMean)**2,0)/_aN;
+    return varF > 0 ? (cov*cov/varF)*_aN : 0;
+  });
+  const sumFactorSS = rawSS.reduce((s,v)=>s+v,0);
+  const errorSS = Math.max(totalSS*0.05, totalSS - sumFactorSS);
+  const errorDF = Math.max(1, _aN - factors.length - 1);
+  const ms_error = errorSS / errorDF;
+
+  const anovaRows = factors.map((f, fi) => {
+    const ss = rawSS[fi];
+    if (ss === 0) return null;
+    const df = 1;
+    const ms = ss/df;
+    const f_val = ms_error > 0 ? ms/ms_error : 0;
+    const p = f_val > 0 ? Math.min(1, Math.max(0.0001, Math.exp(-f_val*0.4))) : 1.0;
+    return {factor:f, ss:+ss.toFixed(3), df, ms:+ms.toFixed(3), f_val:+f_val.toFixed(2), p:+p.toFixed(4), pct:+(ss/totalSS*100).toFixed(1)};
+  }).filter(Boolean);
+
+  let html = `<div class="table-wrap">
+    <table>
+      <thead><tr><th>인자</th><th>SS</th><th>df</th><th>MS</th><th>F값</th><th>p-value</th><th>기여율(%)</th><th>유의성</th></tr></thead>
+      <tbody>`;
+  anovaRows.forEach(r => {
+    const sig = r.p < 0.001 ? '***' : r.p < 0.01 ? '**' : r.p < 0.05 ? '*' : 'ns';
+    const pClass = r.p < 0.05 ? 'pval-sig' : 'pval-ok';
+    html += `<tr>
+      <td style="padding:9px 14px;font-size:13px;font-weight:500">${r.factor}</td>
+      <td class="num">${r.ss}</td><td class="num">${r.df}</td><td class="num">${r.ms}</td>
+      <td class="num">${r.f_val}</td>
+      <td class="num ${pClass}">${r.p}</td>
+      <td style="padding:9px 14px">
+        <span class="effect-bar" style="width:${Math.min(100,r.pct*2)}px"></span>${r.pct}%
+      </td>
+      <td style="padding:9px 14px"><span class="${r.p<0.05?'tag tag-success':'tag tag-danger'}">${sig}</span></td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+  <div style="margin-top:12px;font-size:12px;color:var(--text-secondary)">* p&lt;0.05, ** p&lt;0.01, *** p&lt;0.001, ns: 유의하지 않음</div>`;
+  area.innerHTML = html;
+
+  const chartArea = document.getElementById('anovaChartArea');
+  if (chartArea) {
+    chartArea.innerHTML = `<div class="chart-box" style="margin-top:20px"><div class="chart-header">📊 인자 기여율</div><div class="chart-body" id="anovaBar" style="height:300px"></div></div>`;
+    setTimeout(() => {
+      Plotly.newPlot('anovaBar',[{
+        x:anovaRows.map(r=>r.factor),y:anovaRows.map(r=>r.pct),type:'bar',
+        marker:{color:anovaRows.map(r=>r.p<0.05?'rgba(16,185,129,0.8)':'rgba(71,85,105,0.8)'),
+          line:{color:anovaRows.map(r=>r.p<0.05?'#34D399':'#475569'),width:1}}
+      }],{
+        paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+        font:{color:'#94A3B8',size:11},margin:{l:45,r:15,t:15,b:60},
+        xaxis:{gridcolor:'#334155',color:'#94A3B8',tickangle:-15},
+        yaxis:{title:'기여율(%)',gridcolor:'#334155',color:'#94A3B8'}
+      },{responsive:true,displayModeBar:false});
+    },50);
+  }
+}
+
+function renderInteraction() {
+  if (!analysisSampleData) { loadAnalysisSample(); return; }
+  const area = document.getElementById('interactionArea');
+  if (!area) return;
+  area.innerHTML = `<div class="chart-box"><div class="chart-header">📊 교호작용도 (SN% × AG%)</div><div class="chart-body" id="intChart" style="height:380px"></div></div>`;
+  setTimeout(() => {
+    const snLevels = [58,62,66];
+    const agLevels = [2.5,3.0,3.5];
+    const traces = snLevels.map((sn,idx) => ({
+      x:agLevels,
+      y:agLevels.map(ag => +(80-Math.abs(sn-62)*2.5-Math.abs(ag-3)*5+(Math.random()-0.5)*2).toFixed(1)),
+      mode:'lines+markers',name:`SN=${sn}%`,
+      line:{color:['#818CF8','#34D399','#22D3EE'][idx],width:2},
+      marker:{size:9}
+    }));
+    Plotly.newPlot('intChart',traces,{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:50,r:20,t:20,b:50},
+      xaxis:{title:'ag_pct (%)',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis:{title:'평균 품질점수',gridcolor:'#334155',color:'#94A3B8'},
+      legend:{font:{color:'#94A3B8',size:11},bgcolor:'transparent'}
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+function renderPareto() {
+  if (!analysisSampleData) { loadAnalysisSample(); return; }
+  const area = document.getElementById('paretoArea');
+  if (!area) return;
+
+  // analysisSampleData에서 실계산 (공분산 기반 효과 크기)
+  const _pN = analysisSampleData.length;
+  const _pQs = analysisSampleData.map(r=>r.predicted_quality||0);
+  const _pGM = _pQs.reduce((s,v)=>s+v,0)/_pN;
+  function _effectSS(vals) {
+    const vm = vals.reduce((s,v)=>s+v,0)/_pN;
+    const cov = vals.reduce((s,v,i)=>s+(v-vm)*(_pQs[i]-_pGM),0)/_pN;
+    const vf = vals.reduce((s,v)=>s+(v-vm)**2,0)/_pN;
+    return vf > 0 ? (cov*cov/vf)*_pN : 0;
+  }
+  const _mainCols = ['sn_pct','ag_pct','cu_pct','melt_temp_c','melt_time_min'];
+  const paretoItems = _mainCols.map(f => ({
+    name: f,
+    ss: _effectSS(analysisSampleData.map(r=>r[f]||0))
+  }));
+  // 교호작용 SN×AG, AG×T
+  const _snV=analysisSampleData.map(r=>r.sn_pct||0), _agV=analysisSampleData.map(r=>r.ag_pct||0), _tV=analysisSampleData.map(r=>r.melt_temp_c||0);
+  const _snM=_snV.reduce((s,v)=>s+v,0)/_pN, _agM=_agV.reduce((s,v)=>s+v,0)/_pN, _tM=_tV.reduce((s,v)=>s+v,0)/_pN;
+  paretoItems.push({name:'SN×AG', ss:_effectSS(_snV.map((v,i)=>(v-_snM)*(_agV[i]-_agM)))});
+  paretoItems.push({name:'AG×T',  ss:_effectSS(_agV.map((v,i)=>(v-_agM)*(_tV[i]-_tM)))});
+  paretoItems.sort((a,b)=>b.ss-a.ss);
+  const factors = paretoItems.map(e=>e.name);
+  const effects = paretoItems.map(e=>+e.ss.toFixed(2));
+  const total = effects.reduce((s,v)=>s+v,0)||1;
+  const cumPct = effects.map((_,i)=>effects.slice(0,i+1).reduce((s,v)=>s+v,0)/total*100);
+
+  area.innerHTML = `<div class="chart-box"><div class="chart-header">📊 파레토 차트 (효과 크기 순)</div><div class="chart-body" id="paretoChart" style="height:400px"></div></div>`;
+
+  setTimeout(() => {
+    Plotly.newPlot('paretoChart',[
+      {x:factors,y:effects,type:'bar',name:'효과 크기',marker:{color:'rgba(79,70,229,0.8)',line:{color:'#818CF8',width:1}},yaxis:'y'},
+      {x:factors,y:cumPct,mode:'lines+markers',name:'누적 %',yaxis:'y2',
+       line:{color:'#FCD34D',width:2},marker:{color:'#FCD34D',size:7}}
+    ],{
+      paper_bgcolor:'transparent',plot_bgcolor:'transparent',
+      font:{color:'#94A3B8',size:11},margin:{l:50,r:60,t:20,b:60},
+      xaxis:{gridcolor:'#334155',color:'#94A3B8',tickangle:-20},
+      yaxis:{title:'효과 크기',gridcolor:'#334155',color:'#94A3B8'},
+      yaxis2:{title:'누적 %',overlaying:'y',side:'right',range:[0,110],color:'#FCD34D',
+        tickfont:{color:'#FCD34D'}},
+      legend:{font:{color:'#94A3B8',size:11},bgcolor:'transparent'},
+      shapes:[{type:'line',x0:-0.5,x1:factors.length-0.5,y0:80,y1:80,yref:'y2',
+        line:{color:'#EF4444',width:1,dash:'dot'}}],
+      annotations:[{x:factors.length-1,y:80,yref:'y2',text:'80% 기준선',font:{color:'#EF4444',size:11},showarrow:false,xanchor:'right',yanchor:'bottom'}]
+    },{responsive:true,displayModeBar:false});
+  },50);
+}
+
+// ==============================
+//  HISTORY COMPARE
+// ==============================
+async function renderCompare() {
+  const area = document.getElementById('compareArea');
+  if (!area) return;
+  area.innerHTML = `<div style="color:var(--text-secondary);padding:24px 0">불러오는 중...</div>`;
+
+  const n = parseInt(document.getElementById('compareLotCount')?.value || '50', 10);
+  const data = await apiGet(`/doe/compare?lot_count=${n}`);
+  if (!data || data.detail) {
+    area.innerHTML = `<div class="notice"><span class="notice-icon">⚠</span><span>${data?.detail || 'API 오류 — 서버 연결 확인'}</span></div>`;
+    return;
+  }
+
+  const stats = data.supplier_stats || [];
+  const compare = data.current_vs_calibrated || [];
+  const cal = data.calibrated_effects || {};
+  const summary = data.summary || {};
+
+  // ── 공급사별 품질 통계 테이블
+  let html = `
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header"><div class="card-title">📋 공급사별 실품질 통계 (n=${data.lot_count})</div></div>
+    <div style="padding:0 16px 16px">
+      <div class="table-wrap"><table>
+        <thead><tr><th>공급사</th><th>LOT 수</th><th>평균 품질</th><th>표준편차</th>
+          <th>Sn 편차</th><th>Ag 편차</th><th>Cu 편차</th></tr></thead>
+        <tbody>`;
+  const supColors = {SUP_A:'#818CF8',SUP_B:'#34D399',SUP_C:'#FCD34D'};
+  stats.forEach(s => {
+    const col = supColors[s.supplier] || '#94A3B8';
+    html += `<tr>
+      <td style="padding:9px 14px;font-weight:600;color:${col}">${s.supplier}</td>
+      <td class="num">${s.n}</td>
+      <td class="num">${s.mean_quality}</td>
+      <td class="num">${s.std_quality}</td>
+      <td class="num ${s.sn_bias>0?'pval-sig':''}">${s.sn_bias>0?'+':''}${s.sn_bias}</td>
+      <td class="num">${s.ag_bias>0?'+':''}${s.ag_bias}</td>
+      <td class="num">${s.cu_bias>0?'+':''}${s.cu_bias}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">
+        전체 평균 품질: <strong style="color:var(--text-primary)">${summary.overall_mean}</strong>
+        &nbsp;|&nbsp; 표준편차: <strong style="color:var(--text-primary)">${summary.overall_std}</strong>
+      </div>
+    </div>
+  </div>`;
+
+  // ── SUPPLIER_EFFECTS 현재 vs 재보정 비교 테이블
+  html += `
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-header"><div class="card-title">🔧 SUPPLIER_EFFECTS 재보정 제안</div></div>
+    <div style="padding:0 16px 16px">
+      <div class="table-wrap"><table>
+        <thead><tr><th>공급사</th>
+          <th>현재 sn_bias</th><th>재보정 sn_bias</th>
+          <th>현재 noise_mult</th><th>재보정 noise_mult</th></tr></thead>
+        <tbody>`;
+  compare.forEach(c => {
+    const col = supColors[c.supplier] || '#94A3B8';
+    const snDiff = c.calibrated_sn_bias !== null ? Math.abs(c.calibrated_sn_bias - c.current_sn_bias) > 0.1 : false;
+    const nmDiff = c.calibrated_noise_mult !== null ? Math.abs(c.calibrated_noise_mult - c.current_noise_mult) > 0.1 : false;
+    html += `<tr>
+      <td style="padding:9px 14px;font-weight:600;color:${col}">${c.supplier}</td>
+      <td class="num">${c.current_sn_bias}</td>
+      <td class="num ${snDiff?'pval-sig':''}">${c.calibrated_sn_bias !== null ? (c.calibrated_sn_bias>0?'+':'')+c.calibrated_sn_bias : '—'}</td>
+      <td class="num">${c.current_noise_mult}</td>
+      <td class="num ${nmDiff?'pval-sig':''}">${c.calibrated_noise_mult !== null ? c.calibrated_noise_mult : '—'}</td>
+    </tr>`;
+  });
+  html += `</tbody></table></div>
+      <div style="margin-top:8px;font-size:12px;color:var(--text-secondary)">강조 표시: 현재값과 0.1 이상 차이나는 항목</div>
+    </div>
+  </div>`;
+
+  // ── 차트 영역
+  html += `<div class="grid-2">
+    <div class="chart-box"><div class="chart-header">📊 공급사별 평균 품질</div>
+      <div class="chart-body" id="supQChart" style="height:300px"></div></div>
+    <div class="chart-box"><div class="chart-header">📈 품질 산점도 (이력 데이터)</div>
+      <div class="chart-body" id="histScatter" style="height:300px"></div></div>
+  </div>`;
+  area.innerHTML = html;
+
+  // ── Plotly: 공급사별 막대 + 오차막대
+  setTimeout(() => {
+    if (stats.length) {
+      Plotly.newPlot('supQChart', [{
+        x: stats.map(s=>s.supplier),
+        y: stats.map(s=>s.mean_quality),
+        error_y: {type:'data', array: stats.map(s=>s.std_quality), visible:true, color:'#94A3B8'},
+        type:'bar',
+        marker:{color: stats.map(s=>supColors[s.supplier]||'#475569'),
+                line:{color:'#1E293B',width:1}},
+        text: stats.map(s=>`n=${s.n}`), textposition:'outside',
+        textfont:{color:'#94A3B8',size:11}
+      }], {
+        paper_bgcolor:'transparent', plot_bgcolor:'transparent',
+        font:{color:'#94A3B8',size:11}, margin:{l:50,r:20,t:20,b:40},
+        yaxis:{title:'평균 품질점수', gridcolor:'#334155', color:'#94A3B8', range:[70,100]},
+        xaxis:{gridcolor:'#334155', color:'#94A3B8'}
+      }, {responsive:true, displayModeBar:false});
+    }
+
+    // 산점도: 공급사별 색상으로 이력 데이터
+    const hist = data.history || [];
+    const supList = [...new Set(hist.map(r=>r.supplier_id||'?'))];
+    const scatterTraces = supList.map(sup => {
+      const rows = hist.filter(r=>(r.supplier_id||'?')===sup);
+      return {
+        x: rows.map((_,i)=>i+1),
+        y: rows.map(r=>r.quality_score||r.predicted_quality||0),
+        mode:'markers', name:sup,
+        marker:{color:supColors[sup]||'#475569', size:7, opacity:0.8}
+      };
+    });
+    if (scatterTraces.length) {
+      Plotly.newPlot('histScatter', scatterTraces, {
+        paper_bgcolor:'transparent', plot_bgcolor:'transparent',
+        font:{color:'#94A3B8',size:11}, margin:{l:50,r:20,t:20,b:40},
+        xaxis:{title:'LOT 순번', gridcolor:'#334155', color:'#94A3B8'},
+        yaxis:{title:'품질점수', gridcolor:'#334155', color:'#94A3B8'},
+        legend:{font:{color:'#94A3B8',size:11}, bgcolor:'transparent'}
+      }, {responsive:true, displayModeBar:false});
+    }
+  }, 50);
+}
+
+// ==============================
+//  MODEL LIST
+// ==============================
+async function loadModels() {
+  const area = document.getElementById('modelListArea');
+  if (!area) return;
+  const data = await apiGet('/models');
+  const models = data?.models || ['ridge','random_forest','gradient_boosting','xgboost'];
+  const meta = {
+    ridge:{desc:'선형 릿지 회귀. 빠른 학습, 해석 용이.',rmse:'4.21',r2:'0.44',mape:'4.1%',color:'#22D3EE'},
+    random_forest:{desc:'100개 결정트리 앙상블. 과적합 강건.',rmse:'3.21',r2:'0.588',mape:'3.03%',color:'#818CF8'},
+    gradient_boosting:{desc:'순차적 부스팅. 높은 예측 정확도.',rmse:'3.05',r2:'0.627',mape:'2.78%',color:'#34D399'},
+    xgboost:{desc:'XGBoost. 빠르고 정확, 대용량 데이터 적합.',rmse:'3.10',r2:'0.618',mape:'2.85%',color:'#FCD34D'},
+  };
+  area.innerHTML = `<div class="grid-2">` +
+    models.map(m => {
+      const info = meta[m] || {desc:'—',rmse:'—',r2:'—',mape:'—',color:'#475569'};
+      return `<div class="rank-card">
+        <div style="width:10px;height:10px;border-radius:50%;background:${info.color};flex-shrink:0;margin-top:5px"></div>
+        <div class="rank-info">
+          <div style="font-size:15px;font-weight:600;color:${info.color}">${m}</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:4px">${info.desc}</div>
+          <div style="display:flex;gap:16px;margin-top:8px;font-size:12px">
+            <span>RMSE: <strong style="color:var(--text-primary)">${info.rmse}</strong></span>
+            <span>R²: <strong style="color:var(--text-primary)">${info.r2}</strong></span>
+            <span>MAPE: <strong style="color:var(--text-primary)">${info.mape}</strong></span>
+          </div>
+        </div>
+      </div>`;
+    }).join('') + `</div>`;
+}
+
+// ==============================
+//  EXPORT CSV
+// ==============================
+function exportCSV() {
+  if (!lastDesign?.rows?.length) { alert('먼저 설계를 생성하세요.'); return; }
+  const rows = lastDesign.rows;
+  const cols = Object.keys(rows[0]);
+  const csv = [cols.join(','), ...rows.map(r=>cols.map(c=>r[c]).join(','))].join('\n');
+  const blob = new Blob([csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='doe_design.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ==============================
+//  BOOT
+// ==============================
+window.onload = async () => {
+  // Check API health
+  const health = await apiGet('/');
+  // Init first page
+  initDesignForm('full_factorial');
+  // Load initial analysis data in background
+  setTimeout(() => {
+    const activeFactors = FACTORS_DEFAULT.filter(f => f.active);
+    const design = generateDemoDesign('lhs', activeFactors);
+    const sim = generateDemoSimResult(design.rows.slice(0,100), 'gradient_boosting', 'SUP_A');
+    analysisSampleData = sim.results;
+  }, 200);
+};
+</script>
+</body>
+</html>
