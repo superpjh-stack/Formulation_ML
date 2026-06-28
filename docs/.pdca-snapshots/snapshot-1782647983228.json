@@ -1,0 +1,1839 @@
+{
+  "timestamp": "2026-06-28T11:59:43.221Z",
+  "reason": "compaction",
+  "status": {
+    "version": "2.0",
+    "lastUpdated": "2026-06-28T11:57:24.079Z",
+    "activeFeatures": [
+      "nodejs-frontend",
+      "iteration2",
+      "04 Formulation ML",
+      "data",
+      "features",
+      "evaluation",
+      "tests",
+      "scripts",
+      "raw",
+      "doe",
+      "frontend",
+      "ui",
+      "charts",
+      "forms",
+      "results",
+      "layout",
+      "recommend",
+      "predict",
+      "eda",
+      "model",
+      "scratchpad",
+      "(dashboard)",
+      "main",
+      "lot",
+      "inspect",
+      "claim",
+      "agent",
+      "users",
+      "logs",
+      "notifications",
+      "config",
+      "quality",
+      "workstd",
+      "code",
+      "query",
+      "decision",
+      "recommendations",
+      "production",
+      "manage",
+      "receiving",
+      "history",
+      "supplier",
+      "performance",
+      "monitor",
+      "condition",
+      "analysis",
+      "integrate",
+      "visualization",
+      "training",
+      "optimize",
+      "equipment",
+      "shipping",
+      "deviation",
+      "download",
+      "collect"
+    ],
+    "primaryFeature": "nodejs-frontend",
+    "features": {
+      "nodejs-frontend": {
+        "phase": "completed",
+        "phaseNumber": 5,
+        "matchRate": 100,
+        "iterationCount": 0,
+        "requirements": [
+          "FR-01: GET /models 응답 형식 수정",
+          "FR-02: POST /recommend 응답 형식 수정",
+          "FR-03: POST /predict 응답 형식 수정",
+          "FR-04: GET /eda/stats 신규 구현",
+          "FR-05: FastAPI CORS 추가",
+          "FR-06: EDA 페이지 더미 데이터 → 실 API 연동"
+        ],
+        "documents": {
+          "plan": "docs/01-plan/features/nodejs-frontend.plan.md",
+          "analysis": "docs/03-analysis/nodejs-frontend.analysis.md",
+          "report": "docs/04-report/features/nodejs-frontend.report.md"
+        },
+        "timestamps": {
+          "started": "2026-06-19T00:00:00.000Z",
+          "lastUpdated": "2026-06-19T01:15:00.000Z",
+          "checkedAt": "2026-06-19T01:10:00.000Z",
+          "completedAt": "2026-06-19T01:15:00.000Z"
+        },
+        "targetMatchRate": 90
+      },
+      "iteration2": {
+        "phase": "completed",
+        "phaseNumber": 5,
+        "matchRate": 100,
+        "iterationCount": 1,
+        "parentFeature": "실험계획법-DOE",
+        "requirements": [
+          "TD-1: /doe/optimize",
+          "TD-2: 파레토 차트 실데이터",
+          "TD-3: 공급사 효과",
+          "이력 비교 기능"
+        ],
+        "documents": {
+          "plan": "docs/01-plan/features/iteration2.plan.md",
+          "analysis": "docs/03-analysis/iteration2.analysis.md",
+          "report": "docs/04-report/features/iteration2.report.md"
+        },
+        "timestamps": {
+          "started": "2026-06-17T06:10:00.000Z",
+          "lastUpdated": "2026-06-18T00:00:00.000Z",
+          "checkedAt": "2026-06-18T00:00:00.000Z",
+          "completedAt": "2026-06-18T00:00:00.000Z"
+        },
+        "targetMatchRate": 96
+      },
+      "04 Formulation ML": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:39:54.844Z",
+          "lastUpdated": "2026-06-19T06:33:16.808Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\app.py"
+      },
+      "data": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:40:03.359Z",
+          "lastUpdated": "2026-06-27T22:40:52.735Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\receiving\\data\\page.tsx"
+      },
+      "features": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:40:07.750Z",
+          "lastUpdated": "2026-06-15T08:27:30.258Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\src\\features\\engineering.py"
+      },
+      "evaluation": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:40:19.782Z",
+          "lastUpdated": "2026-06-15T08:28:42.226Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\src\\evaluation\\metrics.py"
+      },
+      "tests": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:40:24.126Z",
+          "lastUpdated": "2026-06-15T08:28:50.509Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\tests\\test_optimize.py"
+      },
+      "scripts": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T06:41:09.157Z",
+          "lastUpdated": "2026-06-19T07:32:20.517Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\scripts\\md_to_docx.py"
+      },
+      "raw": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-15T08:25:39.302Z",
+          "lastUpdated": "2026-06-15T08:25:39.302Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\data\\raw\\generate_sample.py"
+      },
+      "doe": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": 93,
+        "iterationCount": 1,
+        "requirements": [
+          "6가지 DOE 방법",
+          "ML 시뮬레이션",
+          "100+ 샘플",
+          "웹 UI",
+          "API 5종"
+        ],
+        "documents": {
+          "design": "docs/02-design/features/실험계획법-DOE.design.md",
+          "analysis": "docs/03-analysis/실험계획법-DOE.analysis.md",
+          "report": "docs/04-report/features/실험계획법-DOE.report.md"
+        },
+        "timestamps": {
+          "started": "2026-06-17T03:37:53.571Z",
+          "lastUpdated": "2026-06-19T04:33:29.408Z",
+          "completedAt": "2026-06-17T06:10:00.000Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\doe\\page.tsx"
+      },
+      "frontend": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:51:43.924Z",
+          "lastUpdated": "2026-06-28T11:57:24.079Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\page.tsx"
+      },
+      "ui": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:52:59.246Z",
+          "lastUpdated": "2026-06-27T01:36:07.823Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\components\\ui\\DataTable.tsx"
+      },
+      "charts": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:53:31.823Z",
+          "lastUpdated": "2026-06-27T23:06:01.339Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\components\\charts\\MiniSparkline.tsx"
+      },
+      "forms": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:54:18.347Z",
+          "lastUpdated": "2026-06-18T02:54:39.460Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\components\\forms\\PredictForm.tsx"
+      },
+      "results": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:54:49.988Z",
+          "lastUpdated": "2026-06-18T02:54:59.719Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\components\\results\\PredictResult.tsx"
+      },
+      "layout": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:55:05.653Z",
+          "lastUpdated": "2026-06-27T01:35:19.342Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\components\\layout\\AppLayout.tsx"
+      },
+      "recommend": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:55:43.244Z",
+          "lastUpdated": "2026-06-18T02:55:43.245Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\recommend\\page.tsx"
+      },
+      "predict": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:55:49.522Z",
+          "lastUpdated": "2026-06-27T22:49:48.461Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\mixing\\predict\\page.tsx"
+      },
+      "eda": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:56:17.007Z",
+          "lastUpdated": "2026-06-19T01:04:32.352Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\eda\\page.tsx"
+      },
+      "model": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-18T02:56:28.995Z",
+          "lastUpdated": "2026-06-18T02:56:28.995Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\model\\page.tsx"
+      },
+      "scratchpad": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-19T07:38:58.292Z",
+          "lastUpdated": "2026-06-19T07:39:37.854Z"
+        },
+        "lastFile": "C:\\Users\\amore\\AppData\\Local\\Temp\\claude\\C--Users-amore-Desktop-26--AP-Claude-Play-Ground-04-Formulation-ML\\7051b1b0-45f3-4440-86aa-724e022c5d22\\scratchpad\\convert_to_docx.py"
+      },
+      "(dashboard)": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:36:16.049Z",
+          "lastUpdated": "2026-06-27T01:36:16.049Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\layout.tsx"
+      },
+      "main": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:51:02.142Z",
+          "lastUpdated": "2026-06-27T01:51:02.142Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\shipping\\main\\page.tsx"
+      },
+      "lot": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:51:46.511Z",
+          "lastUpdated": "2026-06-27T01:51:46.511Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\shipping\\lot\\page.tsx"
+      },
+      "inspect": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:52:21.245Z",
+          "lastUpdated": "2026-06-27T01:52:21.245Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\shipping\\inspect\\page.tsx"
+      },
+      "claim": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:53:04.600Z",
+          "lastUpdated": "2026-06-27T01:53:04.600Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\shipping\\claim\\page.tsx"
+      },
+      "agent": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:53:52.167Z",
+          "lastUpdated": "2026-06-27T22:48:07.694Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\mixing\\agent\\page.tsx"
+      },
+      "users": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:54:25.210Z",
+          "lastUpdated": "2026-06-27T01:54:25.210Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\system\\users\\page.tsx"
+      },
+      "logs": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:55:13.879Z",
+          "lastUpdated": "2026-06-27T01:55:13.879Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\system\\logs\\page.tsx"
+      },
+      "notifications": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:55:58.255Z",
+          "lastUpdated": "2026-06-27T01:55:58.255Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\system\\notifications\\page.tsx"
+      },
+      "config": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:56:32.129Z",
+          "lastUpdated": "2026-06-27T01:56:32.129Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\system\\config\\page.tsx"
+      },
+      "quality": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:57:19.811Z",
+          "lastUpdated": "2026-06-27T22:43:03.274Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\dashboard\\quality\\page.tsx"
+      },
+      "workstd": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:57:51.862Z",
+          "lastUpdated": "2026-06-27T01:57:51.862Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\master\\workstd\\page.tsx"
+      },
+      "code": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:58:26.439Z",
+          "lastUpdated": "2026-06-27T01:58:26.439Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\master\\code\\page.tsx"
+      },
+      "query": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T01:59:25.192Z",
+          "lastUpdated": "2026-06-27T22:45:11.344Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\data\\query\\page.tsx"
+      },
+      "decision": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T02:00:16.561Z",
+          "lastUpdated": "2026-06-27T02:00:16.561Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\agent\\decision\\page.tsx"
+      },
+      "recommendations": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T02:00:54.471Z",
+          "lastUpdated": "2026-06-27T02:00:54.471Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\agent\\recommendations\\page.tsx"
+      },
+      "production": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T02:01:46.250Z",
+          "lastUpdated": "2026-06-27T22:42:00.411Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\dashboard\\production\\page.tsx"
+      },
+      "manage": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T02:03:22.417Z",
+          "lastUpdated": "2026-06-27T02:04:40.866Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\kpi\\manage\\page.tsx"
+      },
+      "receiving": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:06:45.129Z",
+          "lastUpdated": "2026-06-27T03:06:45.129Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\receiving\\page.tsx"
+      },
+      "history": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:07:30.370Z",
+          "lastUpdated": "2026-06-27T22:43:53.802Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\agent\\history\\page.tsx"
+      },
+      "supplier": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:08:19.556Z",
+          "lastUpdated": "2026-06-27T03:08:19.557Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\receiving\\supplier\\page.tsx"
+      },
+      "performance": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:09:59.309Z",
+          "lastUpdated": "2026-06-27T03:09:59.309Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\process\\performance\\page.tsx"
+      },
+      "monitor": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:11:07.151Z",
+          "lastUpdated": "2026-06-27T03:11:07.151Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\process\\monitor\\page.tsx"
+      },
+      "condition": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:11:52.317Z",
+          "lastUpdated": "2026-06-27T03:11:52.317Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\process\\condition\\page.tsx"
+      },
+      "analysis": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:13:32.434Z",
+          "lastUpdated": "2026-06-27T22:42:08.041Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\agent\\analysis\\page.tsx"
+      },
+      "integrate": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:14:27.604Z",
+          "lastUpdated": "2026-06-27T03:14:27.604Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\data\\integrate\\page.tsx"
+      },
+      "visualization": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:15:32.817Z",
+          "lastUpdated": "2026-06-27T03:15:32.817Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\data\\visualization\\page.tsx"
+      },
+      "training": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T03:16:38.301Z",
+          "lastUpdated": "2026-06-27T03:16:38.301Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\data\\training\\page.tsx"
+      },
+      "optimize": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:43:54.224Z",
+          "lastUpdated": "2026-06-27T22:51:06.457Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\mixing\\optimize\\page.tsx"
+      },
+      "equipment": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:44:03.677Z",
+          "lastUpdated": "2026-06-27T22:44:03.677Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\dashboard\\equipment\\page.tsx"
+      },
+      "shipping": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:45:06.401Z",
+          "lastUpdated": "2026-06-27T22:45:06.401Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\dashboard\\shipping\\page.tsx"
+      },
+      "deviation": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:45:27.556Z",
+          "lastUpdated": "2026-06-27T22:45:27.556Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\mixing\\deviation\\page.tsx"
+      },
+      "download": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:46:02.982Z",
+          "lastUpdated": "2026-06-27T22:46:02.982Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\data\\download\\page.tsx"
+      },
+      "collect": {
+        "phase": "do",
+        "phaseNumber": 3,
+        "matchRate": null,
+        "iterationCount": 0,
+        "requirements": [],
+        "documents": {},
+        "timestamps": {
+          "started": "2026-06-27T22:46:36.584Z",
+          "lastUpdated": "2026-06-27T22:46:36.584Z"
+        },
+        "lastFile": "C:\\Users\\amore\\Desktop\\26년 AP Claude Play Ground\\04 Formulation ML\\frontend\\app\\(dashboard)\\mixing\\collect\\page.tsx"
+      }
+    },
+    "pipeline": {
+      "currentPhase": 1,
+      "level": "Dynamic",
+      "phaseHistory": []
+    },
+    "session": {
+      "startedAt": "2026-06-15T06:24:59.977Z",
+      "onboardingCompleted": false,
+      "lastActivity": "2026-06-28T11:57:24.079Z"
+    },
+    "history": [
+      {
+        "timestamp": "2026-06-15T06:39:54.844Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:03.359Z",
+        "feature": "data",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:07.750Z",
+        "feature": "features",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:12.335Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:19.782Z",
+        "feature": "evaluation",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:24.126Z",
+        "feature": "tests",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:34.385Z",
+        "feature": "data",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:47.229Z",
+        "feature": "features",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:40:57.403Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:41:03.792Z",
+        "feature": "evaluation",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:41:09.157Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T06:41:17.691Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:25:39.302Z",
+        "feature": "raw",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:27:30.258Z",
+        "feature": "features",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:27:40.306Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:27:56.577Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:28:21.817Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:28:33.041Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:28:42.226Z",
+        "feature": "evaluation",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-15T08:28:50.509Z",
+        "feature": "tests",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:02:14.084Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:05:24.838Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:27:51.739Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:28:09.329Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:51:28.627Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T01:51:42.383Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T02:18:09.647Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T02:50:16.495Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-16T03:01:54.496Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T02:38:45.431Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:37:53.571Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:37:54.715Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:38:54.541Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:39:51.686Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:39:53.774Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:40:03.547Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:40:15.341Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T03:40:32.655Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T04:05:37.751Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T04:06:09.489Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T04:06:21.144Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T04:29:20.760Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T06:02:47.727Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T06:02:58.910Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T06:03:32.892Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:17:41.315Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:18:11.338Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:18:30.870Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:18:46.140Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:18:57.450Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-17T12:30:12.712Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T01:16:33.084Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T01:21:17.395Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T01:23:16.531Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T01:48:07.248Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:04:51.098Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:51:43.924Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:51:48.315Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:51:52.587Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:05.722Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:17.925Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:25.961Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:31.957Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:35.502Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:52:59.246Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:03.177Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:07.444Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:14.204Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:18.319Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:31.823Z",
+        "feature": "charts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:43.414Z",
+        "feature": "charts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:52.873Z",
+        "feature": "charts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:53:59.893Z",
+        "feature": "charts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:54:18.347Z",
+        "feature": "forms",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:54:39.460Z",
+        "feature": "forms",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:54:49.988Z",
+        "feature": "results",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:54:59.719Z",
+        "feature": "results",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:55:05.653Z",
+        "feature": "layout",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:55:22.205Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:55:34.624Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:55:43.245Z",
+        "feature": "recommend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:55:49.522Z",
+        "feature": "predict",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:56:17.007Z",
+        "feature": "eda",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:56:28.995Z",
+        "feature": "model",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:56:41.365Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:56:48.702Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-18T02:57:14.991Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:02:15.729Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:03:12.539Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:03:25.960Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:03:36.941Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:03:49.547Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:03:56.913Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:04:05.421Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T01:04:32.352Z",
+        "feature": "eda",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T04:30:41.765Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T04:31:00.984Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T04:33:29.408Z",
+        "feature": "doe",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T04:33:45.655Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T04:33:55.575Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T06:17:31.139Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T06:33:16.808Z",
+        "feature": "04 Formulation ML",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T07:32:20.517Z",
+        "feature": "scripts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T07:38:58.292Z",
+        "feature": "scratchpad",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T07:39:18.926Z",
+        "feature": "scratchpad",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-19T07:39:37.854Z",
+        "feature": "scratchpad",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:34:27.617Z",
+        "feature": "layout",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:35:05.874Z",
+        "feature": "layout",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:35:19.342Z",
+        "feature": "layout",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:35:39.134Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:35:52.962Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:36:07.823Z",
+        "feature": "ui",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:36:16.050Z",
+        "feature": "(dashboard)",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:36:36.309Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:36:50.438Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:51:02.142Z",
+        "feature": "main",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:51:46.511Z",
+        "feature": "lot",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:52:21.245Z",
+        "feature": "inspect",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:53:04.600Z",
+        "feature": "claim",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:53:52.167Z",
+        "feature": "agent",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:54:25.210Z",
+        "feature": "users",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:55:13.879Z",
+        "feature": "logs",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:55:58.255Z",
+        "feature": "notifications",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:56:32.129Z",
+        "feature": "config",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:57:19.811Z",
+        "feature": "quality",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:57:51.862Z",
+        "feature": "workstd",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:58:26.439Z",
+        "feature": "code",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T01:59:25.192Z",
+        "feature": "query",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:00:16.561Z",
+        "feature": "decision",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:00:54.471Z",
+        "feature": "recommendations",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:01:46.250Z",
+        "feature": "production",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:02:36.427Z",
+        "feature": "quality",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:03:22.417Z",
+        "feature": "manage",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T02:04:40.866Z",
+        "feature": "manage",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:06:45.129Z",
+        "feature": "receiving",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:07:30.370Z",
+        "feature": "history",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:08:19.557Z",
+        "feature": "supplier",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:09:17.732Z",
+        "feature": "agent",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:09:59.309Z",
+        "feature": "performance",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:11:07.151Z",
+        "feature": "monitor",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:11:52.317Z",
+        "feature": "condition",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:12:33.799Z",
+        "feature": "history",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:13:32.434Z",
+        "feature": "analysis",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:14:27.604Z",
+        "feature": "integrate",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:15:32.817Z",
+        "feature": "visualization",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T03:16:38.301Z",
+        "feature": "training",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:40:52.735Z",
+        "feature": "data",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:42:00.411Z",
+        "feature": "production",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:42:08.041Z",
+        "feature": "analysis",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:42:32.985Z",
+        "feature": "predict",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:43:03.274Z",
+        "feature": "quality",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:43:53.802Z",
+        "feature": "history",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:43:54.225Z",
+        "feature": "optimize",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:44:03.677Z",
+        "feature": "equipment",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:45:06.401Z",
+        "feature": "shipping",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:45:11.344Z",
+        "feature": "query",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:45:27.556Z",
+        "feature": "deviation",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:46:02.983Z",
+        "feature": "download",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:46:36.584Z",
+        "feature": "collect",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:48:07.694Z",
+        "feature": "agent",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:48:31.580Z",
+        "feature": "predict",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:49:48.461Z",
+        "feature": "predict",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T22:51:06.457Z",
+        "feature": "optimize",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T23:04:59.912Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T23:05:24.167Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T23:05:44.830Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-27T23:06:01.339Z",
+        "feature": "charts",
+        "phase": "do",
+        "action": "updated"
+      },
+      {
+        "timestamp": "2026-06-28T11:57:24.079Z",
+        "feature": "frontend",
+        "phase": "do",
+        "action": "updated"
+      }
+    ]
+  }
+}
