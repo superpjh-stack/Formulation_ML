@@ -1,191 +1,394 @@
 "use client";
 
-import { useState } from "react";
+/**
+ * FE-RT-33 — 데이터 연동 · `/data/integrate` · FR-DT-01 (필수)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-33. 와이어프레임 없음(SF-TD3 §3).
+ * 저장 테이블: `system_settings` (`key='integration.erp.*'`/`'integration.xrf.*'`).
+ * **501 아님.** 단 §13 의 한계가 있다 — 아래 참조.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **설정(configuration)은 담을 수 있으나 런타임 상태(state)는 담을 수 없다** (§13).
+ *
+ *   | 필드 | 성격 | `system_settings` 저장 |
+ *   |---|---|---|
+ *   | `system`/`type`/`endpoint`/`enabled` | 설정 | ✅ |
+ *   | `last_sync_at` | 런타임 상태 | ❌ **항상 `null`** → "동기화 이력 없음" |
+ *   | `status` | 런타임 상태 | ❌ `enabled` 에서 **2값 파생** (사용중/미사용) |
+ *
+ *   FR-DT-01 문장은 *"외부 시스템 데이터 연동 **설정**"* 이다. **설정까지가 요구사항**이고
+ *   동기화 실행·상태 추적은 요구사항 문장에 없다 → v1 게이트는 통과한다.
+ *   **`last_sync_at` 을 0 이나 임의 시각으로 채우지 마라.**
+ *
+ * 라운드 2 에서 지운 것:
+ *   - 하드코딩 소스 6건 — **MES·SCADA·OPC-UA·ODBC·레거시DB 는 SF-AD1~TD5 어디에도
+ *     나오지 않는다. 발명된 값이다.** 산출물이 명시한 연동 대상은 **ERP·XRF 2종**뿐이다
+ *   - 가짜 2초 지연 동기화 트리거 → **수동 동기화 버튼 제거** (동기화 트리거
+ *     엔드포인트가 계약에 없다)
+ *   - 동기화 로그 패널 7건 하드코딩 → **패널 제거** (로그 조회 엔드포인트 없음)
+ *   - 오류 배너의 `"레거시 DB"` 문자열 하드코딩 → 서버 `status`/`message` 기반
+ *   - `recordCount`·`syncInterval` 표시 (계약 응답 필드 없음)
+ *   - 상태 4값(연결됨/오류/동기화중/비활성) → **`enabled` 파생 2값**
+ *   - 권한 분기 신설 — `GET` 조차 **`admin` 전용**이다. 비관리자에게 소스 카드를
+ *     **1장도 렌더링하지 않는다** (엔드포인트 URL 노출 방지 — §9 · 수용 기준 1)
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { getIntegrations, putIntegrations, testIntegration } from "@/lib/koryo-api";
+import {
+  INTEGRATION_STATUS_LABELS,
+  type IntegrationDto,
+  type IntegrationSystem,
+} from "@/types/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { T } from "@/components/ui/tokens";
+import {
+  InlineError,
+  PageHeader,
+  PageShell,
+  ScreenError,
+  Section,
+  hasRole,
+  useRole,
+} from "../../_g1/ui";
+import { Callout, FieldError, Notice, errText, useApi } from "../../_g3/ui";
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-interface DataSource {
-  id: string;
-  name: string;
-  type: string;
-  description: string;
-  status: "연결됨" | "오류" | "동기화중" | "비활성";
-  lastSync: string;
-  recordCount: number;
-  syncInterval: string;
-  icon: string;
-}
-
-const MOCK_SOURCES: DataSource[] = [
-  { id: "mes",      name: "MES 시스템",      type: "REST API",    description: "제조실행시스템 — 생산 실적, LOT 정보, 공정 데이터",  status: "연결됨",  lastSync: "2026-06-27 14:22", recordCount: 48320, syncInterval: "5분",  icon: "M" },
-  { id: "erp",      name: "ERP 시스템",      type: "JDBC",        description: "전사자원관리 — 수발주, 재고, 원자재 입고 정보",        status: "연결됨",  lastSync: "2026-06-27 14:18", recordCount: 23150, syncInterval: "15분", icon: "E" },
-  { id: "quality",  name: "품질관리 시스템", type: "REST API",    description: "품질 검사 결과, 성분 측정치, 클레임 이력",           status: "연결됨",  lastSync: "2026-06-27 14:20", recordCount: 12480, syncInterval: "10분", icon: "Q" },
-  { id: "scada",    name: "SCADA 설비",      type: "OPC-UA",      description: "실시간 설비 센서 데이터 — 온도, RPM, 압력",         status: "동기화중",lastSync: "2026-06-27 14:23", recordCount: 198540, syncInterval: "2초", icon: "S" },
-  { id: "lab",      name: "성분분석 장비",   type: "FTP/CSV",     description: "ICP-OES 성분 분석 결과 파일 자동 수집",             status: "연결됨",  lastSync: "2026-06-27 11:05", recordCount: 3820,  syncInterval: "1시간", icon: "L" },
-  { id: "legacy",   name: "레거시 DB",       type: "ODBC",        description: "구형 품질 데이터베이스 — 히스토리 마이그레이션용",     status: "오류",    lastSync: "2026-06-26 22:00", recordCount: 87400, syncInterval: "1일",  icon: "D" },
-];
-
-const STATUS_MAP: Record<DataSource["status"], { variant: "green" | "red" | "blue" | "gray" }> = {
-  연결됨:   { variant: "green" },
-  오류:     { variant: "red"   },
-  동기화중: { variant: "blue"  },
-  비활성:   { variant: "gray"  },
+const SYSTEM_LABELS: Record<IntegrationSystem, string> = {
+  erp: "ERP",
+  xrf: "XRF 분석기",
 };
 
-const TYPE_COLORS: Record<string, string> = {
-  "REST API": "#3A5BD9",
-  "JDBC":     "#7C3AED",
-  "OPC-UA":   "#16A34A",
-  "FTP/CSV":  "#D97706",
-  "ODBC":     "#687182",
-};
-
-interface SyncLog {
-  time: string;
-  source: string;
+interface TestState {
+  running: boolean;
+  ok: boolean | null;
   message: string;
-  level: "info" | "warn" | "error";
+  latencyMs: number | null;
 }
 
-const MOCK_LOGS: SyncLog[] = [
-  { time: "14:23:02", source: "SCADA",        message: "실시간 데이터 수신 중 — 198,540 레코드",             level: "info"  },
-  { time: "14:22:15", source: "MES",           message: "동기화 완료 — 신규 레코드 34건 추가",               level: "info"  },
-  { time: "14:20:08", source: "품질관리",      message: "동기화 완료 — 신규 레코드 12건 추가",               level: "info"  },
-  { time: "14:18:33", source: "ERP",           message: "동기화 완료 — 신규 레코드 8건 추가",                level: "info"  },
-  { time: "14:00:01", source: "레거시 DB",     message: "연결 타임아웃 — ODBC 드라이버 응답 없음",           level: "error" },
-  { time: "13:55:12", source: "성분분석 장비", message: "파일 파싱 경고 — 인코딩 이슈 1건 무시됨",          level: "warn"  },
-  { time: "13:00:01", source: "레거시 DB",     message: "재연결 시도 실패 (3/3)",                            level: "error" },
-];
-
-const LOG_COLORS = { info: "#1D4ED8", warn: "#B45309", error: "#B91C1C" };
-const LOG_BG     = { info: "#EEF1FD", warn: "#FEF6E7", error: "#FEF1F2" };
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
+/** §6 — 1~500자, `http://`·`https://` 로 시작. `system_settings.value` 는 VARCHAR(255) 다 */
+function validateEndpoint(v: string): string | null {
+  const s = v.trim();
+  if (s === "") return null; // 비활성 상태에서는 빈 값을 허용한다
+  if (s.length > 255) return "엔드포인트는 255자를 넘을 수 없습니다 (system_settings.value 상한)";
+  if (!/^https?:\/\//.test(s)) return "http:// 또는 https:// 로 시작해야 합니다";
+  return null;
+}
 
 export default function DataIntegratePage() {
-  const [syncing, setSyncing] = useState<string | null>(null);
+  const role = useRole();
+  /** api-contract §8.9 — `GET` 조차 `admin R` 이다. `viewer` 전 GET R 규칙의 예외군 */
+  const isAdmin = hasRole(role, "admin");
 
-  function triggerSync(id: string) {
-    setSyncing(id);
-    setTimeout(() => setSyncing(null), 2000);
+  const state = useApi(() => getIntegrations(), [], isAdmin);
+
+  /** 편집 버퍼 — `PUT` 이 배열 전체 교체라 편집분을 모아 한 번에 보낸다 (§4) */
+  const [draft, setDraft] = useState<IntegrationDto[] | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  const [tests, setTests] = useState<Record<string, TestState>>({});
+
+  useEffect(() => {
+    if (state.data) setDraft(state.data.map((d) => ({ ...d })));
+  }, [state.data]);
+
+  const dirty = useMemo(() => {
+    if (!draft || !state.data) return false;
+    return JSON.stringify(draft) !== JSON.stringify(state.data);
+  }, [draft, state.data]);
+
+  const endpointErrors = useMemo(() => {
+    const out: Record<string, string | null> = {};
+    for (const d of draft ?? []) out[d.system] = validateEndpoint(d.endpoint);
+    return out;
+  }, [draft]);
+
+  const hasErrors = Object.values(endpointErrors).some((e) => e !== null);
+
+  const patch = (system: string, next: Partial<IntegrationDto>) =>
+    setDraft((prev) =>
+      prev ? prev.map((d) => (d.system === system ? { ...d, ...next } : d)) : prev
+    );
+
+  const save = useCallback(async () => {
+    if (!draft || draft.length === 0 || hasErrors) return;
+    setSaving(true);
+    setNotice(null);
+    try {
+      // 🔴 낙관적 갱신 금지 — 응답 배열로 목록을 갈아끼운다 (§4)
+      await putIntegrations(draft);
+      setNotice({ tone: "ok", text: "저장되었습니다." });
+      state.refetch();
+    } catch (err) {
+      setNotice({ tone: "error", text: errText(err) });
+    } finally {
+      setSaving(false);
+    }
+  }, [draft, hasErrors, state]);
+
+  const runTest = useCallback(async (system: IntegrationSystem) => {
+    setTests((t) => ({
+      ...t,
+      [system]: { running: true, ok: null, message: "", latencyMs: null },
+    }));
+    try {
+      const res = await testIntegration(system);
+      setTests((t) => ({
+        ...t,
+        [system]: {
+          running: false,
+          ok: res.ok,
+          // 🔴 서버가 준 `message` 를 **그대로** 쓴다. 프론트가 문구를 지어내지 않는다
+          message: res.message,
+          latencyMs: res.latency_ms,
+        },
+      }));
+    } catch (err) {
+      setTests((t) => ({
+        ...t,
+        [system]: { running: false, ok: false, message: errText(err), latencyMs: null },
+      }));
+    }
+  }, []);
+
+  // ── 권한 차단 — 목록을 보여주면 안 된다 (엔드포인트 URL 노출) ──────────────
+  if (role !== null && !isAdmin) {
+    return (
+      <PageShell>
+        <PageHeader title="데이터 연동" subtitle="외부 시스템 연동 설정 및 상태" />
+        <ScreenError message="접근 권한이 없습니다" />
+      </PageShell>
+    );
   }
 
-  const connected   = MOCK_SOURCES.filter((s) => s.status === "연결됨" || s.status === "동기화중").length;
-  const totalRecs   = MOCK_SOURCES.reduce((a, s) => a + s.recordCount, 0);
-  const errorCount  = MOCK_SOURCES.filter((s) => s.status === "오류").length;
+  if (state.status === 403) {
+    return (
+      <PageShell>
+        <PageHeader title="데이터 연동" subtitle="외부 시스템 연동 설정 및 상태" />
+        <ScreenError message="접근 권한이 없습니다" />
+      </PageShell>
+    );
+  }
+
+  const list = draft ?? [];
+  const enabledCount = list.filter((d) => d.enabled).length;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>데이터 통합관리</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>연결된 데이터 소스 현황 및 동기화 관리</p>
-      </div>
-
-      {/* Summary strip */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        {[
-          { label: "데이터 소스",   value: MOCK_SOURCES.length, unit: "개",  color: "#3A5BD9" },
-          { label: "연결됨",        value: connected,            unit: "개",  color: "#16A34A" },
-          { label: "오류",          value: errorCount,           unit: "개",  color: errorCount > 0 ? "#DC2626" : "#16A34A" },
-          { label: "총 레코드",     value: `${(totalRecs / 10000).toFixed(1)}만`, unit: "건", color: "#7C3AED" },
-        ].map((s) => (
-          <div key={s.label} className="card" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: "#687182", letterSpacing: "0.03em", textTransform: "uppercase" as const }}>{s.label}</span>
-            <span style={{ fontSize: 24, fontWeight: 800, color: s.color, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-              {s.value}<span style={{ fontSize: 12, fontWeight: 500, color: "#9AA4B2", marginLeft: 3 }}>{s.unit}</span>
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Error banner */}
-      {errorCount > 0 && (
-        <div style={{ background: "#FEF1F2", border: "1px solid #FCA5A5", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 1L15 14H1L8 1z" stroke="#DC2626" strokeWidth="1.4" strokeLinejoin="round" /><path d="M8 6v4M8 11v.5" stroke="#DC2626" strokeWidth="1.4" strokeLinecap="round" /></svg>
-          <span style={{ fontSize: 12.5, color: "#B91C1C" }}>
-            <strong>레거시 DB</strong> 연결에 오류가 발생했습니다. ODBC 드라이버 상태를 확인하세요.
-          </span>
-          <button style={{ marginLeft: "auto", padding: "4px 12px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #FCA5A5", background: "#fff", color: "#B91C1C", cursor: "pointer" }}>
-            재연결 시도
+    <PageShell>
+      <PageHeader
+        title="데이터 연동"
+        subtitle="외부 시스템 연동 설정 및 상태"
+        actions={
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!dirty || saving || hasErrors || list.length === 0}
+            onClick={() => void save()}
+          >
+            {saving ? "저장 중…" : "저장"}
           </button>
-        </div>
-      )}
+        }
+      />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 20 }}>
-        {/* Source cards */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {MOCK_SOURCES.map((src) => {
-            const isSyncing = syncing === src.id || src.status === "동기화중";
-            return (
-              <div key={src.id} className="card" style={{ display: "flex", gap: 14, alignItems: "flex-start", borderColor: src.status === "오류" ? "#FCA5A5" : "#E4E7EC" }}>
-                {/* Icon */}
-                <div style={{
-                  width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-                  background: src.status === "오류" ? "#FEF1F2" : "#EEF1FD",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 15, fontWeight: 800,
-                  color: src.status === "오류" ? "#DC2626" : "#3A5BD9",
-                }}>
-                  {src.icon}
-                </div>
-                {/* Info */}
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>{src.name}</span>
-                    <StatusBadge variant={STATUS_MAP[src.status].variant} label={src.status} dot />
-                    <span style={{ fontSize: 11, fontWeight: 600, color: TYPE_COLORS[src.type] ?? "#687182", background: "#F8F9FB", border: "1px solid #E4E7EC", borderRadius: 4, padding: "1px 6px" }}>
-                      {src.type}
-                    </span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#687182", marginBottom: 6 }}>{src.description}</div>
-                  <div style={{ display: "flex", gap: 16, fontSize: 11.5, color: "#9AA4B2" }}>
-                    <span>마지막 동기화: <strong style={{ color: "#687182" }}>{src.lastSync}</strong></span>
-                    <span>레코드: <strong style={{ color: "#687182", fontVariantNumeric: "tabular-nums" }}>{src.recordCount.toLocaleString()}건</strong></span>
-                    <span>주기: <strong style={{ color: "#687182" }}>{src.syncInterval}</strong></span>
-                  </div>
-                </div>
-                {/* Action */}
-                <button
-                  onClick={() => triggerSync(src.id)}
-                  disabled={src.status === "오류"}
+      {notice && <Notice tone={notice.tone === "ok" ? "ok" : "error"}>{notice.text}</Notice>}
+      {dirty && !saving && <Notice tone="warn">저장되지 않은 변경이 있습니다.</Notice>}
+
+      {state.error && <InlineError message={state.error} onRetry={state.refetch} />}
+
+      {/*
+        연결 테스트의 성격을 화면에 명시한다 — 위장 금지.
+        서버는 설정값(사용 여부·엔드포인트 형식)을 검증할 뿐 **실제 소켓을 열지 않는다.**
+      */}
+      <Callout>
+        <strong>연결 테스트는 설정 검증까지만 수행합니다.</strong> 외부 시스템에 실제로
+        접속하지 않으며, 성공 응답이 곧 연결 성립을 뜻하지 않습니다.
+        <br />
+        <span style={{ fontSize: 11.5, color: T.textMuted }}>
+          동기화 실행·상태 추적은 v1 범위 밖입니다 (`last_sync_at`·`status` 를 저장할 컬럼이
+          없어 CR-DB-002 후보로 등재).
+        </span>
+      </Callout>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <SummaryCard label="연동 소스" value={state.loading || state.error ? "—" : String(list.length)} />
+        <SummaryCard label="사용중" value={state.loading || state.error ? "—" : String(enabledCount)} />
+        <SummaryCard
+          label="미사용"
+          value={state.loading || state.error ? "—" : String(list.length - enabledCount)}
+        />
+        {/* `last_sync_at` 은 v1 에서 항상 `null` 이다 */}
+        <SummaryCard label="마지막 동기화" value="동기화 이력 없음" small />
+      </div>
+
+      <Section title="연동 소스">
+        {state.loading && <Center>불러오는 중…</Center>}
+        {!state.loading && !state.error && list.length === 0 && (
+          <Center>연동 설정이 없습니다.</Center>
+        )}
+
+        {!state.loading && list.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {list.map((d) => {
+              const t = tests[d.system];
+              const epError = endpointErrors[d.system];
+              return (
+                <div
+                  key={d.system}
                   style={{
-                    padding: "5px 12px", fontSize: 12, fontWeight: 600, borderRadius: 7, flexShrink: 0,
-                    border: "1px solid #E4E7EC",
-                    background: isSyncing ? "#EEF1FD" : "#F8F9FB",
-                    color: isSyncing ? "#3A5BD9" : "#687182",
-                    cursor: src.status === "오류" ? "default" : "pointer",
-                    opacity: src.status === "오류" ? 0.5 : 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 10,
+                    padding: "14px 16px",
+                    borderRadius: 10,
+                    border: `1px solid ${T.border}`,
+                    background: T.surface,
                   }}
                 >
-                  {isSyncing ? "동기화중…" : "수동 동기화"}
-                </button>
-              </div>
-            );
-          })}
-        </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <strong style={{ fontSize: 13, fontWeight: 600, color: T.text }}>
+                      {SYSTEM_LABELS[d.system] ?? d.system}
+                    </strong>
+                    <span style={{ fontSize: 11.5, color: T.textMuted }}>{d.type}</span>
+                    <div style={{ flex: 1 }} />
+                    <StatusBadge
+                      variant={d.enabled ? "green" : "gray"}
+                      label={INTEGRATION_STATUS_LABELS[d.enabled ? "in_use" : "not_in_use"]}
+                    />
+                  </div>
 
-        {/* Sync log */}
-        <div className="card" style={{ padding: 0, overflow: "hidden", alignSelf: "flex-start" }}>
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid #E4E7EC", fontSize: 13, fontWeight: 700, color: "#161B26" }}>
-            동기화 로그
-          </div>
-          <div style={{ padding: "8px 0", display: "flex", flexDirection: "column" as const }}>
-            {MOCK_LOGS.map((log, i) => (
-              <div key={i} style={{ padding: "8px 14px", display: "flex", flexDirection: "column" as const, gap: 2, borderBottom: i < MOCK_LOGS.length - 1 ? "1px solid #F2F4F7" : "none" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, padding: "1px 5px", borderRadius: 3, background: LOG_BG[log.level], color: LOG_COLORS[log.level], textTransform: "uppercase" as const }}>
-                    {log.level}
-                  </span>
-                  <span style={{ fontSize: 11, color: "#9AA4B2", fontVariantNumeric: "tabular-nums" }}>{log.time}</span>
-                  <span style={{ fontSize: 11, color: "#687182", fontWeight: 600 }}>{log.source}</span>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5, flex: 1, minWidth: 320 }}>
+                      <label
+                        htmlFor={`ep-${d.system}`}
+                        style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}
+                      >
+                        엔드포인트
+                      </label>
+                      <input
+                        id={`ep-${d.system}`}
+                        type="text"
+                        value={d.endpoint}
+                        maxLength={255}
+                        placeholder="https://erp.internal/api"
+                        onChange={(e) => patch(d.system, { endpoint: e.target.value })}
+                        style={{
+                          height: 34,
+                          width: "100%",
+                          padding: "0 10px",
+                          borderRadius: 8,
+                          border: `1px solid ${epError ? T.error : T.border}`,
+                          fontSize: 12.5,
+                          fontFamily: "inherit",
+                          color: T.text,
+                        }}
+                      />
+                      <FieldError message={epError} />
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+                        사용 여부
+                      </span>
+                      <label
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                          height: 34,
+                          fontSize: 12.5,
+                          color: T.text,
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={d.enabled}
+                          onChange={(e) => patch(d.system, { enabled: e.target.checked })}
+                        />
+                        사용
+                      </label>
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+                        마지막 동기화
+                      </span>
+                      <span style={{ height: 34, lineHeight: "34px", fontSize: 12.5, color: T.textMuted }}>
+                        동기화 이력 없음
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="btn"
+                      disabled={t?.running}
+                      onClick={() => void runTest(d.system)}
+                      style={{ height: 34, alignSelf: "flex-end" }}
+                    >
+                      {t?.running ? "확인 중…" : "연결 테스트"}
+                    </button>
+                  </div>
+
+                  {t && !t.running && t.ok !== null && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        lineHeight: 1.6,
+                        color: t.ok ? "#15803D" : "#B42318",
+                      }}
+                    >
+                      {t.ok ? "✔ 설정 검증 통과" : "✖ 설정 검증 실패"}
+                      {t.latencyMs !== null && ` (${Math.round(t.latencyMs)} ms)`} — {t.message}
+                    </div>
+                  )}
                 </div>
-                <div style={{ fontSize: 11.5, color: "#161B26", lineHeight: 1.5 }}>{log.message}</div>
-              </div>
-            ))}
+              );
+            })}
           </div>
-        </div>
-      </div>
+        )}
+      </Section>
+    </PageShell>
+  );
+}
+
+function Center({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        minHeight: 160,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        color: T.textMuted,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  small,
+}: {
+  label: string;
+  value: string;
+  small?: boolean;
+}) {
+  return (
+    <div className="card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>{label}</span>
+      <strong
+        style={{
+          fontSize: small ? 14 : 28,
+          fontWeight: small ? 500 : 700,
+          color: small ? T.textMuted : T.text,
+          lineHeight: 1.4,
+        }}
+      >
+        {value}
+      </strong>
     </div>
   );
 }

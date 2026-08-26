@@ -1,258 +1,361 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { KpiCard } from "@/components/ui/KpiCard";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+/**
+ * FE-RT-44 — 품질 KPI · `/kpi/quality` · FR-K-02 (필수)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-44. 와이어프레임 없음(SF-TD3 §3).
+ * SF-AD2 §1.10 인용: *"평균 품질 점수, 합격률, 클레임 발생률 월별 KPI"*.
+ * 저장 테이블: `quality` + `claims` + `kpi_targets` (셋 다 존재). **501 아님.**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 라운드 2 에서 고친 것:
+ *   - 하드코딩 6개월 배열 삭제 → `GET /api/v1/kpi/quality?months=` 실 연동
+ *   - **`defectRate`(불량률) 카드 제거** — FR-K-01 소관이다. FE-RT-43 으로 이관했다.
+ *     이 화면에 불량률이 있으면 수용 기준 3 위반이다
+ *   - `CUSTOMER_SCORES` 6건 제거 — 삼성전자/LG이노텍/현대모비스/SK하이닉스/삼성SDI/
+ *     한화에어로. **고객사명이 산출물 어디에도 없고**(`CUST-A` 형식이 정본)
+ *     고객사별 품질 점수를 낼 컬럼도 없다. 고객사 단위 집계는 요구사항(FR-K-02)에도 없다
+ *   - 목표선 `target` prop 하드코딩 → `kpi_targets.target_value` (서버 조인)
+ *   - **합격 기준선 신설** — 품질점수 트렌드에 기준선이 없었다.
+ *     🔴 값은 하드코딩하지 않는다. `usePublicSettings()` 의 `quality_pass_score` 이고,
+ *     서버 값을 못 읽으면 폴백 배너를 띄운다 (`source === 'fallback'`)
+ *   - 기간 선택 신설
+ *   - 페이지 내부 canvas 중복 구현(`TrendChart`) → 공용 컴포넌트
+ *
+ * ✅ **`claim_rate` 가 v1.1 에서 살아났다.** api-contract §8.11 은 *"`claims`(CR-DB-001)
+ *    대기 → `null`"* 이라고 적었으나 `claims` 테이블이 생성 완료됐다 (db-schema §6.4).
+ *
+ * ⚠ **`claim_rate` 의 분모가 계약에 정의돼 있지 않다** (`COUNT(shipments)` 인지
+ *   `COUNT(lots)` 인지 불명 — 부록 B #7). **서버 값을 그대로 표시하고 프론트가
+ *   계산하지 않는다.**
+ *
+ * ⚠ 목표값이 실재하는 지표는 **평균 품질점수(88)** 1종뿐이다. `pass_rate`·`claim_rate` 는
+ *   근거가 없어 `target=null` 로 오므로 **게이지를 숨긴다**.
+ *   달성 판정(`achieved`)은 **서버가 한다** — 클레임률이 낮을수록 좋다는 방향을
+ *   프론트가 하드코딩하지 않는다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface MonthlyQuality {
-  month: string;
-  defectRate: number;
-  claimRate: number;
-  passRate: number;
-  qualityScore: number;
-}
+import { useMemo, useState } from "react";
+import { useKpiQuality, usePublicSettings } from "@/hooks/useKoryoData";
+import { KPI_DECIMALS, KPI_LABELS, KPI_UNITS } from "@/types/api";
+import { passScoreOf } from "@/lib/quality";
+import { TrendChart } from "@/components/charts/TrendChart";
+import { T } from "@/components/ui/tokens";
+import {
+  Field,
+  FilterBar,
+  PageHeader,
+  PageShell,
+  ScreenError,
+  Section,
+  Select,
+  SettingsFallbackBanner,
+  num,
+} from "../../_g1/ui";
+import { TargetGauge } from "../../_g3/ui";
 
-const MONTHLY_Q: MonthlyQuality[] = [
-  { month: "1월", defectRate: 3.2, claimRate: 0.8, passRate: 96.8, qualityScore: 84.2 },
-  { month: "2월", defectRate: 2.9, claimRate: 0.7, passRate: 97.1, qualityScore: 85.1 },
-  { month: "3월", defectRate: 2.4, claimRate: 0.5, passRate: 97.6, qualityScore: 87.3 },
-  { month: "4월", defectRate: 2.7, claimRate: 0.6, passRate: 97.3, qualityScore: 86.0 },
-  { month: "5월", defectRate: 2.3, claimRate: 0.4, passRate: 97.7, qualityScore: 88.1 },
-  { month: "6월", defectRate: 2.8, claimRate: 0.7, passRate: 97.2, qualityScore: 85.8 },
+const MONTH_OPTIONS = [
+  { value: "6", label: "최근 6개월" },
+  { value: "12", label: "최근 12개월" },
+  { value: "24", label: "최근 24개월" },
 ];
 
-const CUSTOMER_SCORES = [
-  { customer: "삼성전자",  score: 92, claims: 2, trend: "up" as const },
-  { customer: "LG이노텍",  score: 89, claims: 1, trend: "up" as const },
-  { customer: "현대모비스", score: 81, claims: 3, trend: "down" as const },
-  { customer: "SK하이닉스", score: 94, claims: 1, trend: "up" as const },
-  { customer: "삼성SDI",   score: 88, claims: 1, trend: "neutral" as const },
-  { customer: "한화에어로", score: 86, claims: 2, trend: "neutral" as const },
-];
+/** FR-K-02 의 3요소와 1:1. **불량률은 여기 없다** (FE-RT-43 소관) */
+const METRICS = ["quality_avg", "pass_rate", "claim_rate"] as const;
+type Metric = (typeof METRICS)[number];
 
-function TrendChart({ data, valueKey, color, target }: {
-  data: MonthlyQuality[];
-  valueKey: keyof MonthlyQuality;
-  color: string;
-  target?: number;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+const gap = (v: number | null | undefined) => (Number.isFinite(v as number) ? (v as number) : NaN);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth, H = canvas.offsetHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
+export default function KpiQualityPage() {
+  const [months, setMonths] = useState(12);
+  const state = useKpiQuality(months);
 
-    const values = data.map((d) => d[valueKey] as number);
-    const padL = 36, padR = 12, padT = 12, padB = 24;
-    const cW = W - padL - padR, cH = H - padT - padB;
-    const allVals = target ? [...values, target] : values;
-    const min = Math.min(...allVals) * 0.95;
-    const max = Math.max(...allVals) * 1.05;
+  /** 🔴 합격선은 서버 설정이 정본이다. 70 을 코드에 박지 않는다 */
+  const settings = usePublicSettings();
+  const passScore = passScoreOf(settings.data?.settings);
 
-    const px = (i: number) => padL + (i / (data.length - 1)) * cW;
-    const py = (v: number) => padT + cH - ((v - min) / (max - min)) * cH;
-
-    // Grid
-    [0, 1, 2, 3].forEach((t) => {
-      const v = min + (t / 3) * (max - min);
-      const y = py(v);
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.strokeStyle = "#F2F4F7";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = "500 9px system-ui";
-      ctx.textAlign = "right";
-      ctx.fillText(v.toFixed(1), padL - 4, y + 3);
-    });
-
-    // Target line
-    if (target !== undefined) {
-      const ty = py(target);
-      ctx.beginPath();
-      ctx.moveTo(padL, ty);
-      ctx.lineTo(W - padR, ty);
-      ctx.strokeStyle = "#E4E7EC";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([4, 3]);
-      ctx.stroke();
-      ctx.setLineDash([]);
+  const rows = useMemo(() => state.data ?? [], [state.data]);
+  /**
+   * 요약 카드가 가리키는 "현재" 달.
+   *
+   * 서버는 요청한 개월 수만큼 **실적이 없는 미래 달까지** 채워 준다
+   * (예: 2026-07·08 은 전 지표가 `null`). 초판은 배열의 마지막 원소를 그대로 썼는데,
+   * 그 결과 카드가 전부 `—` 로 뜨면서 **바로 아래 표에는 값이 찍히는 자기모순**이 났다
+   * (QA-C DEF-C-01). 실적이 하나라도 있는 **가장 최근 달**을 고른다.
+   */
+  const latest = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const r = rows[i];
+      if (METRICS.some((k) => r[k] !== null && r[k] !== undefined)) return r;
     }
+    return null;
+  }, [rows]);
 
-    // Area
-    const grad = ctx.createLinearGradient(0, padT, 0, padT + cH);
-    grad.addColorStop(0, color + "30");
-    grad.addColorStop(1, color + "00");
-    ctx.beginPath();
-    ctx.moveTo(px(0), py(values[0]));
-    for (let i = 1; i < values.length; i++) {
-      const xc = (px(i - 1) + px(i)) / 2;
-      ctx.quadraticCurveTo(px(i - 1), py(values[i - 1]), xc, (py(values[i - 1]) + py(values[i])) / 2);
-    }
-    ctx.lineTo(px(values.length - 1), py(values[values.length - 1]));
-    ctx.lineTo(px(values.length - 1), padT + cH);
-    ctx.lineTo(px(0), padT + cH);
-    ctx.closePath();
-    ctx.fillStyle = grad;
-    ctx.fill();
+  if (state.error) {
+    return (
+      <PageShell>
+        <PageHeader title="품질 KPI" subtitle="월별 평균 품질점수·합격률·클레임 발생률" />
+        <ScreenError message={state.error} onRetry={state.refetch} />
+      </PageShell>
+    );
+  }
 
-    // Line
-    ctx.beginPath();
-    ctx.moveTo(px(0), py(values[0]));
-    for (let i = 1; i < values.length; i++) {
-      const xc = (px(i - 1) + px(i)) / 2;
-      ctx.quadraticCurveTo(px(i - 1), py(values[i - 1]), xc, (py(values[i - 1]) + py(values[i])) / 2);
-    }
-    ctx.lineTo(px(values.length - 1), py(values[values.length - 1]));
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 2;
-    ctx.stroke();
-
-    // Dots + labels
-    data.forEach((d, i) => {
-      const v = d[valueKey] as number;
-      ctx.beginPath();
-      ctx.arc(px(i), py(v), 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(px(i), py(v), 3.5, 0, Math.PI * 2);
-      ctx.strokeStyle = "#fff";
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      // Month label
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = "500 9px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(d.month, px(i), H - padB + 14);
-    });
-  }, [data, valueKey, color, target]);
-
-  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />;
-}
-
-export default function QualityKpiPage() {
-  const current = MONTHLY_Q[MONTHLY_Q.length - 1];
+  const empty = !state.loading && rows.length === 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>품질 KPI</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          불량률·클레임률 추이 및 고객사별 품질 점수
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="품질 KPI"
+        subtitle="월별 평균 품질점수·합격률·클레임 발생률"
+        actions={
+          <Field label="기간" htmlFor="kq-months" width={160}>
+            <Select
+              id="kq-months"
+              value={String(months)}
+              onChange={(v) => setMonths(Number(v))}
+              options={MONTH_OPTIONS}
+              width={160}
+            />
+          </Field>
+        }
+      />
 
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        <KpiCard label="6월 불량률"     value={current.defectRate}   unit="%" trend="down" trendValue="+0.5%p" sparkline={MONTHLY_Q.map(m => ({ value: m.defectRate }))}   accentColor="#DC2626" />
-        <KpiCard label="클레임률"       value={current.claimRate}    unit="%" trend="down" trendValue="+0.3%p" sparkline={MONTHLY_Q.map(m => ({ value: m.claimRate }))}    accentColor="#F59E0B" />
-        <KpiCard label="출하 합격률"    value={current.passRate}     unit="%" trend="neutral" trendValue="-0.5%p" sparkline={MONTHLY_Q.map(m => ({ value: m.passRate }))}   accentColor="#16A34A" />
-        <KpiCard label="평균 품질점수"  value={current.qualityScore} unit="점" trend="down" trendValue="-2.3점"  sparkline={MONTHLY_Q.map(m => ({ value: m.qualityScore }))} accentColor="#3A5BD9" />
-      </div>
+      {/* 임계값이 서버 값이 아니면 숨기지 않는다 */}
+      <SettingsFallbackBanner settings={settings.data} />
 
-      {/* Charts */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 4 }}>불량률 추이</div>
-          <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: "#9AA4B2", marginBottom: 14 }}>
-            <span>목표: 3.0% 이하</span>
-            <span style={{ color: current.defectRate <= 3.0 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>
-              현재 {current.defectRate}% {current.defectRate <= 3.0 ? "달성" : "초과"}
+      {/* ── KPI 카드 3 ─────────────────────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        {METRICS.map((m) => (
+          <div key={m} className="card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+              {KPI_LABELS[m]}
             </span>
+            <strong style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1.2 }}>
+              {state.loading || !latest ? "—" : num(latest[m], KPI_DECIMALS[m])}
+              <span style={{ fontSize: 14, fontWeight: 500, color: T.textSub, marginLeft: 4 }}>
+                {KPI_UNITS[m]}
+              </span>
+            </strong>
+            {latest && latest.target[m] !== null && (
+              <span style={{ fontSize: 11.5, color: T.textMuted }}>
+                목표 {num(latest.target[m], KPI_DECIMALS[m])}
+                {KPI_UNITS[m]}
+                {latest.achieved[m] !== null && (
+                  <strong
+                    style={{ marginLeft: 6, color: latest.achieved[m] ? T.success : T.error }}
+                  >
+                    {latest.achieved[m] ? "달성" : "미달"}
+                  </strong>
+                )}
+              </span>
+            )}
+            {latest && latest.target[m] === null && (
+              <span style={{ fontSize: 11.5, color: T.textMuted }}>목표 미설정</span>
+            )}
           </div>
-          <div style={{ height: 180 }}><TrendChart data={MONTHLY_Q} valueKey="defectRate" color="#DC2626" target={3.0} /></div>
-        </div>
-        <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 4 }}>클레임률 추이</div>
-          <div style={{ display: "flex", gap: 14, fontSize: 11.5, color: "#9AA4B2", marginBottom: 14 }}>
-            <span>목표: 0.5% 이하</span>
-            <span style={{ color: current.claimRate <= 0.5 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>
-              현재 {current.claimRate}% {current.claimRate <= 0.5 ? "달성" : "초과"}
-            </span>
-          </div>
-          <div style={{ height: 180 }}><TrendChart data={MONTHLY_Q} valueKey="claimRate" color="#F59E0B" target={0.5} /></div>
-        </div>
+        ))}
       </div>
 
-      {/* Customer quality scores */}
-      <div className="card">
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 16 }}>고객사별 품질 점수</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
-          {CUSTOMER_SCORES.map((c) => {
-            const scoreColor = c.score >= 90 ? "#15803D" : c.score >= 85 ? "#3A5BD9" : c.score >= 80 ? "#B45309" : "#B91C1C";
-            const scoreBg   = c.score >= 90 ? "#ECFDF3" : c.score >= 85 ? "#EEF1FD" : c.score >= 80 ? "#FEF6E7" : "#FEF1F2";
-            const trendArrow = c.trend === "up" ? "↑" : c.trend === "down" ? "↓" : "→";
-            const trendColor = c.trend === "up" ? "#15803D" : c.trend === "down" ? "#B91C1C" : "#9AA4B2";
-            return (
-              <div key={c.customer} style={{ padding: "14px 16px", borderRadius: 10, background: scoreBg, border: `1px solid ${scoreColor}20` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>{c.customer}</span>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: trendColor }}>{trendArrow}</span>
-                </div>
-                <div style={{ display: "flex", alignItems: "flex-end", gap: 4, marginBottom: 8 }}>
-                  <span style={{ fontSize: 28, fontWeight: 900, color: scoreColor, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}>{c.score}</span>
-                  <span style={{ fontSize: 12, color: "#9AA4B2", marginBottom: 2 }}>점</span>
-                </div>
-                {/* Score bar */}
-                <div style={{ height: 5, borderRadius: 3, background: "#fff", overflow: "hidden", marginBottom: 8 }}>
-                  <div style={{ height: "100%", width: `${c.score}%`, borderRadius: 3, background: scoreColor }} />
-                </div>
-                <div style={{ fontSize: 11.5, color: "#687182" }}>
-                  클레임 {c.claims}건
-                </div>
+      <Section title="목표 대비 달성">
+        {state.loading && <Center>불러오는 중…</Center>}
+        {empty && <Center>해당 기간에 품질 실적이 없습니다.</Center>}
+        {!state.loading && latest && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {METRICS.map((m) => (
+              <TargetGauge
+                key={m}
+                label={`${KPI_LABELS[m]} (${latest.month})`}
+                actual={latest[m]}
+                target={latest.target[m]}
+                achieved={latest.achieved[m]}
+                unit={KPI_UNITS[m]}
+                digits={KPI_DECIMALS[m]}
+              />
+            ))}
+            {METRICS.every((m) => latest.target[m] === null) && (
+              <span style={{ fontSize: 12.5, color: T.textMuted }}>
+                설정된 목표값이 없습니다. KPI 설정 화면에서 목표를 등록하세요.
+              </span>
+            )}
+          </div>
+        )}
+      </Section>
+
+      <Section title="월별 트렌드">
+        {state.loading && <Center height={240}>불러오는 중…</Center>}
+        {empty && <Center height={240}>해당 기간에 품질 실적이 없습니다.</Center>}
+        {!state.loading && rows.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            {METRICS.map((m) => (
+              <div key={m}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+                  {KPI_LABELS[m]} ({KPI_UNITS[m]})
+                </span>
+                <TrendChart
+                  categories={rows.map((r) => r.month)}
+                  series={[{ name: KPI_LABELS[m], values: rows.map((r) => gap(r[m])) }]}
+                  height={180}
+                  legend={false}
+                  /* 품질점수에만 합격 기준선을 그린다 — 값은 서버 설정에서 온다 */
+                  references={
+                    m === "quality_avg"
+                      ? [{ value: passScore, label: `합격선 ${passScore}점` }]
+                      : undefined
+                  }
+                  ariaLabel={`${KPI_LABELS[m]} 월별 트렌드`}
+                />
               </div>
-            );
-          })}
-        </div>
-      </div>
+            ))}
+          </div>
+        )}
+      </Section>
 
-      {/* Monthly quality table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid #E4E7EC" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>월별 품질 KPI 상세</span>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
+      <Section title="월별 실적">
+        <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 12 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12.5,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
             <thead>
               <tr style={{ background: "#F8F9FB" }}>
-                {["월", "불량률(%)", "클레임률(%)", "합격률(%)", "품질점수", "평가"].map((h) => (
-                  <th key={h} style={{ padding: "9px 14px", textAlign: h === "월" ? "left" : "right", fontSize: 11.5, fontWeight: 600, color: "#687182", borderBottom: "1px solid #E4E7EC", letterSpacing: "0.03em", textTransform: "uppercase" }}>{h}</th>
+                <Th>월</Th>
+                {METRICS.map((m) => (
+                  <Th key={m} right>
+                    {KPI_LABELS[m]} ({KPI_UNITS[m]})
+                  </Th>
+                ))}
+                {METRICS.map((m) => (
+                  <Th key={`t-${m}`} right>
+                    {KPI_LABELS[m]} 목표
+                  </Th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {MONTHLY_Q.map((m, i) => {
-                const isCurrent = i === MONTHLY_Q.length - 1;
-                const grade = m.qualityScore >= 88 ? "우수" : m.qualityScore >= 85 ? "양호" : "개선필요";
-                const gv = grade === "우수" ? "green" : grade === "양호" ? "blue" : "amber";
-                return (
-                  <tr key={m.month} style={{ borderBottom: i < MONTHLY_Q.length - 1 ? "1px solid #F2F4F7" : "none", background: isCurrent ? "#F8F9FB" : "transparent" }}>
-                    <td style={{ padding: "9px 14px", fontWeight: isCurrent ? 700 : 400, color: "#161B26" }}>
-                      {m.month}{isCurrent && <span style={{ fontSize: 10.5, color: "#3A5BD9", marginLeft: 6, fontWeight: 700 }}>현재</span>}
-                    </td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: m.defectRate <= 3 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>{m.defectRate}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: m.claimRate <= 0.5 ? "#15803D" : "#B91C1C", fontWeight: 600 }}>{m.claimRate}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: "#161B26" }}>{m.passRate}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", fontWeight: 700, color: "#161B26" }}>{m.qualityScore}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right" }}><StatusBadge variant={gv as "green" | "blue" | "amber"} label={grade} /></td>
+              {state.loading && (
+                <tr>
+                  <Td colSpan={7} muted>
+                    불러오는 중…
+                  </Td>
+                </tr>
+              )}
+              {empty && (
+                <tr>
+                  <Td colSpan={7} muted>
+                    해당 기간에 품질 실적이 없습니다.
+                  </Td>
+                </tr>
+              )}
+              {!state.loading &&
+                rows.map((r) => (
+                  <tr key={r.month} style={{ borderTop: `1px solid ${T.border}` }}>
+                    <Td>{r.month}</Td>
+                    {METRICS.map((m) => (
+                      <Td key={m} right>
+                        {num(r[m], KPI_DECIMALS[m])}
+                      </Td>
+                    ))}
+                    {METRICS.map((m) => (
+                      <Td key={`t-${m}`} right>
+                        {r.target[m] === null ? (
+                          "—"
+                        ) : (
+                          <>
+                            {num(r.target[m], KPI_DECIMALS[m])}
+                            {r.achieved[m] !== null && (
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  color: r.achieved[m] ? T.success : T.error,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {r.achieved[m] ? "✔" : "✖"}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </Td>
+                    ))}
                   </tr>
-                );
-              })}
+                ))}
             </tbody>
           </table>
         </div>
-      </div>
+
+        <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+          ⓘ 클레임 발생률의 분모(출하 건수 / LOT 수)가 계약에 정의돼 있지 않습니다. 서버가 준
+          값을 그대로 표시하며 화면에서 다시 계산하지 않습니다. 합격 기준선은 서버 설정
+          (`quality_pass_score`)에서 읽은 값입니다. 불량률은 이 화면 소관이 아니며 생산 KPI 에
+          있습니다.
+        </span>
+      </Section>
+    </PageShell>
+  );
+}
+
+function Center({ children, height = 140 }: { children: React.ReactNode; height?: number }) {
+  return (
+    <div
+      style={{
+        minHeight: height,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        color: T.textMuted,
+      }}
+    >
+      {children}
     </div>
+  );
+}
+
+function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
+  return (
+    <th
+      style={{
+        padding: "10px 12px",
+        fontSize: 12,
+        fontWeight: 600,
+        color: T.textSub,
+        textAlign: right ? "right" : "left",
+        whiteSpace: "nowrap",
+        borderBottom: `1px solid ${T.border}`,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  colSpan,
+  right,
+  muted,
+}: {
+  children: React.ReactNode;
+  colSpan?: number;
+  right?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      style={{
+        padding: muted ? "28px 12px" : "9px 12px",
+        color: muted ? T.textMuted : T.text,
+        textAlign: muted ? "center" : right ? "right" : "left",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </td>
   );
 }

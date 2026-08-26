@@ -1,253 +1,354 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { KpiCard } from "@/components/ui/KpiCard";
+/**
+ * FE-RT-43 — 생산 KPI · `/kpi/production` · FR-K-01 (필수)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-43. 와이어프레임 없음(SF-TD3 §3).
+ * SF-AD3 기능대비표: *"목표 대비 실적 **게이지·트렌드**"* → 두 요소가 명시적 구성요소다.
+ * 저장 테이블: `lots`(집계) + `kpi_targets`(목표값). **501 아님.**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **생산량 단위는 `LOT` 다. `kg` 이 나오면 실패다** (수용 기준 3).
+ *
+ * `lots` 에 투입량·산출량 컬럼이 없다 (api-contract §8.6: *"`input_qty`/`output_qty` 는
+ * 저장 테이블이 없다"*). 그래서 계약이 `production_volume` 을 `COUNT(lots)` 로 대체하고
+ * 단위를 `LOT` 로 규정했다. 개편 전 `production: 18200` (kg) 은 **저장할 곳이 없는 값**이었다.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - 하드코딩 6개월 배열 삭제 → `GET /api/v1/kpi/production?months=` 실 연동
+ *   - 생산량 kg → **LOT**
+ *   - `utilization`(설비 가동률)·`efficiency`(생산 효율) 카드 제거 —
+ *     `equipment` 에 가동률 컬럼이 없고 `lots` 에 효율 컬럼이 없다
+ *   - **수율·불량률 신설** — FR-K-01 의 3요소 중 2개가 빠져 있었다
+ *   - 목표값 `20000` 하드코딩 → `kpi_targets.target_value` (서버 조인)
+ *   - 기간 선택 신설 (항상 6개월 고정이었다)
+ *   - 페이지 내부 canvas 중복 구현(`GaugeArc`) → 공용 조각
+ *
+ * ✅ **계약 확장 #4 가 반영됐다.** `target`·`achieved` 가 스칼라가 아니라
+ *    **지표별 객체**(`{yield_pct, production_volume, defect_rate}`)로 온다.
+ *    덕분에 3지표 모두 게이지를 그릴 수 있다.
+ *
+ * ⚠ 목표값이 실재하는 지표는 **수율(95)·불량률(5)** 2종뿐이다. `production_volume` 은
+ *   근거가 없어 `target=null` 로 오므로 **게이지를 숨긴다** (수용 기준 4).
+ *   **달성 판정(`achieved`)은 서버가 한다** — 불량률은 낮을수록 좋다는 방향을
+ *   프론트가 하드코딩하지 않는다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface MonthlyData {
-  month: string;
-  production: number;
-  target: number;
-  utilization: number;
-  efficiency: number;
-}
+import { useMemo, useState } from "react";
+import { useKpiProduction } from "@/hooks/useKoryoData";
+import { KPI_DECIMALS, KPI_LABELS, KPI_UNITS } from "@/types/api";
+import { TrendChart } from "@/components/charts/TrendChart";
+import { T } from "@/components/ui/tokens";
+import {
+  Field,
+  FilterBar,
+  PageHeader,
+  PageShell,
+  ScreenError,
+  Section,
+  Select,
+  num,
+} from "../../_g1/ui";
+import { TargetGauge } from "../../_g3/ui";
 
-const MONTHLY: MonthlyData[] = [
-  { month: "1월",  production: 18200, target: 20000, utilization: 82, efficiency: 91 },
-  { month: "2월",  production: 17500, target: 20000, utilization: 79, efficiency: 88 },
-  { month: "3월",  production: 21300, target: 20000, utilization: 91, efficiency: 94 },
-  { month: "4월",  production: 19800, target: 20000, utilization: 87, efficiency: 92 },
-  { month: "5월",  production: 20500, target: 20000, utilization: 89, efficiency: 93 },
-  { month: "6월",  production: 16800, target: 20000, utilization: 84, efficiency: 90 },
+/** `months` 상한이 계약에 없다 — 프론트 선택지를 24 로 제한한다 (**판단값**) */
+const MONTH_OPTIONS = [
+  { value: "6", label: "최근 6개월" },
+  { value: "12", label: "최근 12개월" },
+  { value: "24", label: "최근 24개월" },
 ];
 
-const SPARKLINE_PROD = MONTHLY.map((m) => ({ value: m.production }));
-const SPARKLINE_UTIL = MONTHLY.map((m) => ({ value: m.utilization }));
-const SPARKLINE_EFF  = MONTHLY.map((m) => ({ value: m.efficiency }));
+const METRICS = ["yield_pct", "production_volume", "defect_rate"] as const;
+type Metric = (typeof METRICS)[number];
 
-// Gauge component
-function GaugeArc({ value, max, color, label, sub }: { value: number; max: number; color: string; label: string; sub: string }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const pct = Math.min(value / max, 1);
+/** 값 없는 달은 **선을 끊는다.** 0 으로 찍지 않는다 (§6) */
+const gap = (v: number | null | undefined) => (Number.isFinite(v as number) ? (v as number) : NaN);
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth;
-    const H = canvas.offsetHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
+export default function KpiProductionPage() {
+  const [months, setMonths] = useState(12);
+  const state = useKpiProduction(months);
 
-    const cx = W / 2, cy = H * 0.72, r = Math.min(W, H) * 0.42;
-    const startA = Math.PI, endA = Math.PI * 2;
-    const fillA = startA + pct * Math.PI;
-
-    // Track
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, startA, endA);
-    ctx.strokeStyle = "#E4E7EC";
-    ctx.lineWidth = 12;
-    ctx.lineCap = "round";
-    ctx.stroke();
-
-    // Fill
-    if (pct > 0) {
-      ctx.beginPath();
-      ctx.arc(cx, cy, r, startA, fillA);
-      const grad = ctx.createLinearGradient(cx - r, 0, cx + r, 0);
-      grad.addColorStop(0, color + "99");
-      grad.addColorStop(1, color);
-      ctx.strokeStyle = grad;
-      ctx.lineWidth = 12;
-      ctx.lineCap = "round";
-      ctx.stroke();
+  const rows = useMemo(() => state.data ?? [], [state.data]);
+  /**
+   * 요약 카드가 가리키는 "현재" 달.
+   *
+   * 서버는 요청한 개월 수만큼 **실적이 없는 미래 달까지** 채워 준다
+   * (예: 2026-07·08 은 전 지표가 `null`). 초판은 배열의 마지막 원소를 그대로 썼는데,
+   * 그 결과 카드가 전부 `—` 에 "설정된 목표값이 없습니다" 로 뜨면서
+   * **바로 아래 표에는 목표 95.0/5.0/88.00 이 찍히는 자기모순**이 났다 (QA-C DEF-C-01).
+   *
+   * 실적이 하나라도 있는 **가장 최근 달**을 고른다.
+   */
+  const latest = useMemo(() => {
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      const r = rows[i];
+      if (METRICS.some((k) => r[k] !== null && r[k] !== undefined)) return r;
     }
+    return null;
+  }, [rows]);
 
-    // Value text
-    ctx.fillStyle = "#161B26";
-    ctx.font = `800 ${Math.round(W * 0.13)}px system-ui`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(`${Math.round(pct * 100)}%`, cx, cy - 6);
+  if (state.error) {
+    return (
+      <PageShell>
+        <PageHeader title="생산 KPI" subtitle="월별 수율·생산량·불량률 · 목표 대비 현황" />
+        <ScreenError message={state.error} onRetry={state.refetch} />
+      </PageShell>
+    );
+  }
 
-    ctx.fillStyle = "#9AA4B2";
-    ctx.font = `600 ${Math.round(W * 0.07)}px system-ui`;
-    ctx.fillText(sub, cx, cy + Math.round(W * 0.1));
-  }, [value, max, color, pct, sub]);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-      <canvas ref={canvasRef} style={{ width: 140, height: 90, display: "block" }} />
-      <span style={{ fontSize: 12.5, fontWeight: 700, color: "#161B26" }}>{label}</span>
-    </div>
-  );
-}
-
-// Bar chart canvas
-function BarChart({ data }: { data: MonthlyData[] }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth;
-    const H = canvas.offsetHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
-
-    const padL = 52, padR = 16, padT = 16, padB = 28;
-    const chartW = W - padL - padR;
-    const chartH = H - padT - padB;
-    const maxVal = 22000;
-    const barCount = data.length;
-    const groupW = chartW / barCount;
-    const barW = groupW * 0.28;
-
-    // Grid lines
-    [0, 5000, 10000, 15000, 20000].forEach((v) => {
-      const y = padT + chartH - (v / maxVal) * chartH;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.strokeStyle = "#F2F4F7";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = "500 10px system-ui";
-      ctx.textAlign = "right";
-      ctx.fillText(`${v / 1000}k`, padL - 6, y + 4);
-    });
-
-    // Bars
-    data.forEach((d, i) => {
-      const x = padL + i * groupW;
-      const cx = x + groupW / 2;
-
-      // Target line marker
-      const ty = padT + chartH - (d.target / maxVal) * chartH;
-      ctx.beginPath();
-      ctx.moveTo(cx - groupW * 0.35, ty);
-      ctx.lineTo(cx + groupW * 0.35, ty);
-      ctx.strokeStyle = "#E4E7EC";
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([3, 2]);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Production bar
-      const barH = (d.production / maxVal) * chartH;
-      const barX = cx - barW;
-      const barY = padT + chartH - barH;
-      const grad = ctx.createLinearGradient(0, barY, 0, padT + chartH);
-      grad.addColorStop(0, "#3A5BD9");
-      grad.addColorStop(1, "#6B8AFF");
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.roundRect(barX, barY, barW, barH, [3, 3, 0, 0]);
-      ctx.fill();
-
-      // Month label
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = "600 10px system-ui";
-      ctx.textAlign = "center";
-      ctx.fillText(d.month, cx, H - padB + 14);
-    });
-  }, [data]);
-
-  return <canvas ref={canvasRef} style={{ width: "100%", height: "100%", display: "block" }} />;
-}
-
-export default function ProductionKpiPage() {
-  const currentMonth = MONTHLY[MONTHLY.length - 1];
-  const achRate = Math.round((currentMonth.production / currentMonth.target) * 100);
+  const empty = !state.loading && rows.length === 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>생산성 KPI</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          월별 생산량·가동률·효율 추이 및 목표 대비 달성률
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="생산 KPI"
+        subtitle="월별 수율·생산량·불량률 · 목표 대비 현황"
+        actions={
+          <Field label="기간" htmlFor="kp-months" width={160}>
+            <Select
+              id="kp-months"
+              value={String(months)}
+              onChange={(v) => setMonths(Number(v))}
+              options={MONTH_OPTIONS}
+              width={160}
+            />
+          </Field>
+        }
+      />
 
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        <KpiCard label="6월 생산량" value="16,800" unit="kg" trend="down" trendValue="-18%" sparkline={SPARKLINE_PROD} accentColor="#3A5BD9" />
-        <KpiCard label="목표 달성률" value={achRate} unit="%" trend="down" trendValue="-16%p" sparkline={[82, 79, 100, 99, 100, 84].map(v => ({ value: v }))} accentColor="#F59E0B" />
-        <KpiCard label="평균 가동률" value={currentMonth.utilization} unit="%" trend="neutral" trendValue="전월대비" sparkline={SPARKLINE_UTIL} accentColor="#16A34A" />
-        <KpiCard label="생산 효율" value={currentMonth.efficiency} unit="%" trend="up" trendValue="+2%p" sparkline={SPARKLINE_EFF} accentColor="#7C3AED" />
-      </div>
-
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 20 }}>
-        {/* Bar chart */}
-        <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 4 }}>월별 생산량 추이</div>
-          <div style={{ fontSize: 12, color: "#9AA4B2", marginBottom: 16, display: "flex", gap: 16 }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 10, height: 10, borderRadius: 2, background: "#3A5BD9", display: "inline-block" }} />실적
+      {/* ── KPI 카드 3 ─────────────────────────────────────────────────────── */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        {METRICS.map((m) => (
+          <div key={m} className="card" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+              {KPI_LABELS[m]}
             </span>
-            <span style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 12, height: 2, background: "#E4E7EC", display: "inline-block" }} />목표(20,000 kg)
-            </span>
+            <strong style={{ fontSize: 28, fontWeight: 700, color: T.text, lineHeight: 1.2 }}>
+              {state.loading || !latest ? "—" : num(latest[m], KPI_DECIMALS[m])}
+              <span style={{ fontSize: 14, fontWeight: 500, color: T.textSub, marginLeft: 4 }}>
+                {KPI_UNITS[m]}
+              </span>
+            </strong>
+            {/* 목표가 없으면 목표 줄 자체를 그리지 않는다 */}
+            {latest && latest.target[m] !== null && (
+              <span style={{ fontSize: 11.5, color: T.textMuted }}>
+                목표 {num(latest.target[m], KPI_DECIMALS[m])}
+                {KPI_UNITS[m]}
+                {latest.achieved[m] !== null && (
+                  <strong
+                    style={{
+                      marginLeft: 6,
+                      color: latest.achieved[m] ? T.success : T.error,
+                    }}
+                  >
+                    {latest.achieved[m] ? "달성" : "미달"}
+                  </strong>
+                )}
+              </span>
+            )}
+            {latest && latest.target[m] === null && (
+              <span style={{ fontSize: 11.5, color: T.textMuted }}>목표 미설정</span>
+            )}
           </div>
-          <div style={{ height: 220 }}>
-            <BarChart data={MONTHLY} />
-          </div>
-        </div>
-
-        {/* Gauge panel */}
-        <div className="card">
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 20 }}>6월 목표 달성률</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 16, alignItems: "center" }}>
-            <GaugeArc value={currentMonth.production} max={currentMonth.target} color="#3A5BD9" label="생산량 달성" sub={`${(currentMonth.production / 1000).toFixed(1)}k / 20k`} />
-            <GaugeArc value={currentMonth.utilization} max={100} color="#16A34A" label="가동률" sub={`${currentMonth.utilization}%`} />
-            <GaugeArc value={currentMonth.efficiency} max={100} color="#7C3AED" label="생산 효율" sub={`${currentMonth.efficiency}%`} />
-          </div>
-        </div>
+        ))}
       </div>
 
-      {/* Monthly table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "12px 16px", borderBottom: "1px solid #E4E7EC" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>월별 KPI 상세</span>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>
+      {/* ── 목표 대비 달성 게이지 — 목표값이 있는 지표만 ────────────────────── */}
+      <Section title="목표 대비 달성">
+        {state.loading && <Center>불러오는 중…</Center>}
+        {empty && <Center>해당 기간에 생산 실적이 없습니다.</Center>}
+        {!state.loading && latest && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            {METRICS.map((m) => (
+              <TargetGauge
+                key={m}
+                label={`${KPI_LABELS[m]} (${latest.month})`}
+                actual={latest[m]}
+                target={latest.target[m]}
+                achieved={latest.achieved[m]}
+                unit={KPI_UNITS[m]}
+                digits={KPI_DECIMALS[m]}
+              />
+            ))}
+            {METRICS.every((m) => latest.target[m] === null) && (
+              <span style={{ fontSize: 12.5, color: T.textMuted }}>
+                설정된 목표값이 없습니다. KPI 설정 화면에서 목표를 등록하세요.
+              </span>
+            )}
+          </div>
+        )}
+      </Section>
+
+      {/* ── 월별 트렌드 ────────────────────────────────────────────────────── */}
+      <Section title="월별 트렌드">
+        {state.loading && <Center height={240}>불러오는 중…</Center>}
+        {empty && <Center height={240}>해당 기간에 생산 실적이 없습니다.</Center>}
+        {!state.loading && rows.length > 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+            {METRICS.map((m) => (
+              <div key={m}>
+                <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>
+                  {KPI_LABELS[m]} ({KPI_UNITS[m]})
+                </span>
+                <TrendChart
+                  categories={rows.map((r) => r.month)}
+                  series={[{ name: KPI_LABELS[m], values: rows.map((r) => gap(r[m])) }]}
+                  height={180}
+                  legend={false}
+                  ariaLabel={`${KPI_LABELS[m]} 월별 트렌드`}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+      </Section>
+
+      {/* ── 월별 표 ────────────────────────────────────────────────────────── */}
+      <Section title="월별 실적">
+        <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 12 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12.5,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
             <thead>
               <tr style={{ background: "#F8F9FB" }}>
-                {["월", "생산량(kg)", "목표(kg)", "달성률", "가동률", "효율"].map((h) => (
-                  <th key={h} style={{ padding: "9px 14px", textAlign: h === "월" ? "left" : "right", fontSize: 11.5, fontWeight: 600, color: "#687182", borderBottom: "1px solid #E4E7EC", letterSpacing: "0.03em", textTransform: "uppercase" }}>{h}</th>
+                <Th>월</Th>
+                {METRICS.map((m) => (
+                  <Th key={m} right>
+                    {KPI_LABELS[m]} ({KPI_UNITS[m]})
+                  </Th>
+                ))}
+                {METRICS.map((m) => (
+                  <Th key={`t-${m}`} right>
+                    {KPI_LABELS[m]} 목표
+                  </Th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {MONTHLY.map((m, i) => {
-                const rate = Math.round((m.production / m.target) * 100);
-                const isCurrent = i === MONTHLY.length - 1;
-                return (
-                  <tr key={m.month} style={{ borderBottom: i < MONTHLY.length - 1 ? "1px solid #F2F4F7" : "none", background: isCurrent ? "#F8F9FB" : "transparent" }}>
-                    <td style={{ padding: "9px 14px", fontWeight: isCurrent ? 700 : 400, color: "#161B26" }}>{m.month}{isCurrent && <span style={{ fontSize: 10.5, color: "#3A5BD9", marginLeft: 6, fontWeight: 700 }}>현재</span>}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: "#161B26" }}>{m.production.toLocaleString()}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: "#9AA4B2" }}>{m.target.toLocaleString()}</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right" }}>
-                      <span style={{ fontWeight: 700, color: rate >= 100 ? "#15803D" : rate >= 90 ? "#B45309" : "#B91C1C" }}>{rate}%</span>
-                    </td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: "#161B26" }}>{m.utilization}%</td>
-                    <td style={{ padding: "9px 14px", textAlign: "right", color: "#161B26" }}>{m.efficiency}%</td>
+              {state.loading && (
+                <tr>
+                  <Td colSpan={7} muted>
+                    불러오는 중…
+                  </Td>
+                </tr>
+              )}
+              {empty && (
+                <tr>
+                  <Td colSpan={7} muted>
+                    해당 기간에 생산 실적이 없습니다.
+                  </Td>
+                </tr>
+              )}
+              {!state.loading &&
+                rows.map((r) => (
+                  <tr key={r.month} style={{ borderTop: `1px solid ${T.border}` }}>
+                    <Td>{r.month}</Td>
+                    {METRICS.map((m) => (
+                      <Td key={m} right>
+                        {num(r[m], KPI_DECIMALS[m])}
+                      </Td>
+                    ))}
+                    {METRICS.map((m) => (
+                      <Td key={`t-${m}`} right>
+                        {r.target[m] === null ? (
+                          "—"
+                        ) : (
+                          <>
+                            {num(r.target[m], KPI_DECIMALS[m])}
+                            {r.achieved[m] !== null && (
+                              <span
+                                style={{
+                                  marginLeft: 5,
+                                  color: r.achieved[m] ? T.success : T.error,
+                                  fontWeight: 600,
+                                }}
+                              >
+                                {r.achieved[m] ? "✔" : "✖"}
+                              </span>
+                            )}
+                          </>
+                        )}
+                      </Td>
+                    ))}
                   </tr>
-                );
-              })}
+                ))}
             </tbody>
           </table>
         </div>
-      </div>
+
+        <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+          ⓘ 생산량은 `COUNT(lots)` 이며 단위는 <strong>LOT</strong> 입니다 — 투입량·산출량
+          컬럼이 DB 에 없어 kg 으로 표시할 수 없습니다. 달성 여부는 서버 판정값이며, 목표가
+          없는 지표는 게이지와 목표 열을 표시하지 않습니다.
+        </span>
+      </Section>
+    </PageShell>
+  );
+}
+
+function Center({ children, height = 140 }: { children: React.ReactNode; height?: number }) {
+  return (
+    <div
+      style={{
+        minHeight: height,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        color: T.textMuted,
+      }}
+    >
+      {children}
     </div>
+  );
+}
+
+function Th({ children, right }: { children: React.ReactNode; right?: boolean }) {
+  return (
+    <th
+      style={{
+        padding: "10px 12px",
+        fontSize: 12,
+        fontWeight: 600,
+        color: T.textSub,
+        textAlign: right ? "right" : "left",
+        whiteSpace: "nowrap",
+        borderBottom: `1px solid ${T.border}`,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
+
+function Td({
+  children,
+  colSpan,
+  right,
+  muted,
+}: {
+  children: React.ReactNode;
+  colSpan?: number;
+  right?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      style={{
+        padding: muted ? "28px 12px" : "9px 12px",
+        color: muted ? T.textMuted : T.text,
+        textAlign: muted ? "center" : right ? "right" : "left",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </td>
   );
 }

@@ -107,4 +107,8 @@ def recommend_ratios(
         optimal_ratios["success"] = False
         optimal_ratios["message"] = f"최적화 실패 ({result.message}) — 표준 배합비율 반환"
 
+    # SF-TD3 §3.3 "반복: 24회 / 수렴: ✅" — api-contract.md §8.4.2 가 응답에 요구한다.
+    # 성공/실패 양쪽에서 채운다 (실패 화면도 몇 회 돌았는지 보여줘야 한다).
+    optimal_ratios["iterations"] = int(getattr(result, "nit", 0) or 0)
+
     return optimal_ratios

@@ -1,181 +1,306 @@
 "use client";
 
-import { useState } from "react";
-import { DataTable, Column } from "@/components/ui/DataTable";
+/**
+ * FE-RT-07 — 입고 이력 · `/receiving/history` · FR-R-02
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-07 · 계약: `api-contract.md` §8.3 · **§8.3.1**.
+ * 읽기 전용 화면이다 (쓰기 액션 없음, 전 역할 R).
+ *
+ * 라운드 2 에서 고친 것:
+ *   - `MOCK_HISTORY` 12행 제거 → `GET /receipts/history` (`useReceiptHistory`) 실 연동
+ *   - 클라이언트 `filter()` → **서버 쿼리**(`supplier`/`material`/`date_from`/`date_to`)
+ *   - **기간 필터 신규** (FR-R-02 의 검색 3축 중 하나인데 현 구현에 없었다) · 기본 최근 90일
+ *   - `Page<T>` 페이징 신규
+ *   - `SUP_D` 제거 · 판정(합격/불합격/보류) 열 제거 → `status` 3값으로 통합
+ *   - CSV 내보내기 버튼 제거 — `/data/export` 의 `entity` 화이트리스트에 `receipts` 가 없다 (TODO-G1-007)
+ *   - LOT번호 열 제거 (`receipts` 에 LOT 컬럼 없음 — 입고와 LOT 은 다른 축이다)
+ *
+ * 🔴 **부록 C 값 오류 교정**: 현 구현의 편차 임계 `0.5`/`0.15`/`0.05` 를 그대로 쓰지 않았다.
+ *    다만 이 화면은 **애초에 편차 경고를 적용하지 않는다** — 아래 §성분 참조.
+ */
+
+import { useMemo, useState } from "react";
+import { DataTable, type Column } from "@/components/ui/DataTable";
+import { KpiCard } from "@/components/ui/KpiCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { T } from "@/components/ui/tokens";
+import { useReceiptHistory } from "@/hooks/useKoryoData";
+import type { ReceiptQuery } from "@/lib/koryo-api";
+import { RECEIPT_STATUS_LABELS } from "@/types/api";
+import type { ReceiptDto, ReceiptMaterial, ReceiptStatus, SupplierCode } from "@/types/api";
+import {
+  DASH,
+  DateInput,
+  Field,
+  FilterBar,
+  PAGE_SIZE_OPTIONS,
+  PageHeader,
+  PageShell,
+  Pagination,
+  SUPPLIER_FILTER_OPTIONS,
+  ScreenError,
+  SectionState,
+  Select,
+  daysAgo,
+  int,
+  num,
+  today,
+} from "../../_g1/ui";
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-interface HistoryItem {
-  id: string;
-  date: string;
-  supplier: string;
-  lot: string;
-  material: string;
-  qty: string;
-  sn: number;
-  ag: number;
-  cu: number;
-  result: "합격" | "불합격" | "보류";
-}
-
-const MOCK_HISTORY: HistoryItem[] = [
-  { id: "RC-2026-0601", date: "2026-06-27", supplier: "SUP_A", lot: "LOT-A-240001", material: "Sn (주석)", qty: "500 kg", sn: 62.1, ag: 2.98, cu: 0.51, result: "합격" },
-  { id: "RC-2026-0602", date: "2026-06-27", supplier: "SUP_B", lot: "LOT-B-240001", material: "Pb (납)",   qty: "300 kg", sn: 61.8, ag: 3.02, cu: 0.49, result: "합격" },
-  { id: "RC-2026-0603", date: "2026-06-27", supplier: "SUP_A", lot: "LOT-A-240002", material: "Ag (은)",   qty: "50 kg",  sn: 62.3, ag: 3.05, cu: 0.52, result: "합격" },
-  { id: "RC-2026-0604", date: "2026-06-26", supplier: "SUP_C", lot: "LOT-C-240001", material: "Cu (구리)", qty: "200 kg", sn: 61.5, ag: 2.85, cu: 0.47, result: "보류" },
-  { id: "RC-2026-0605", date: "2026-06-26", supplier: "SUP_B", lot: "LOT-B-240002", material: "Sn (주석)", qty: "400 kg", sn: 62.0, ag: 3.01, cu: 0.50, result: "합격" },
-  { id: "RC-2026-0606", date: "2026-06-26", supplier: "SUP_D", lot: "LOT-D-240001", material: "Ag (은)",   qty: "30 kg",  sn: 59.8, ag: 2.72, cu: 0.44, result: "불합격" },
-  { id: "RC-2026-0607", date: "2026-06-25", supplier: "SUP_A", lot: "LOT-A-240003", material: "Pb (납)",   qty: "150 kg", sn: 62.2, ag: 2.99, cu: 0.51, result: "합격" },
-  { id: "RC-2026-0608", date: "2026-06-25", supplier: "SUP_C", lot: "LOT-C-240002", material: "Sn (주석)", qty: "600 kg", sn: 61.9, ag: 3.03, cu: 0.50, result: "합격" },
-  { id: "RC-2026-0609", date: "2026-06-24", supplier: "SUP_A", lot: "LOT-A-240004", material: "Cu (구리)", qty: "250 kg", sn: 62.4, ag: 3.07, cu: 0.53, result: "합격" },
-  { id: "RC-2026-0610", date: "2026-06-24", supplier: "SUP_B", lot: "LOT-B-240003", material: "Sn (주석)", qty: "350 kg", sn: 61.6, ag: 2.91, cu: 0.48, result: "합격" },
-  { id: "RC-2026-0611", date: "2026-06-23", supplier: "SUP_D", lot: "LOT-D-240002", material: "Ag (은)",   qty: "45 kg",  sn: 60.2, ag: 2.78, cu: 0.43, result: "불합격" },
-  { id: "RC-2026-0612", date: "2026-06-23", supplier: "SUP_C", lot: "LOT-C-240003", material: "Pb (납)",   qty: "180 kg", sn: 62.1, ag: 3.00, cu: 0.50, result: "합격" },
-];
-
-const RESULT_MAP: Record<HistoryItem["result"], { variant: "green" | "red" | "amber" }> = {
-  합격:   { variant: "green" },
-  불합격: { variant: "red" },
-  보류:   { variant: "amber" },
+const STATUS_VARIANT: Record<ReceiptStatus, "green" | "red" | "amber"> = {
+  accepted: "green",
+  rejected: "red",
+  inspecting: "amber",
 };
 
-// Deviation cell helpers
-function deviationCell(value: number, target: number, tolerance: number) {
-  const dev = value - target;
-  const isOk = Math.abs(dev) <= tolerance;
-  return (
-    <span style={{ fontVariantNumeric: "tabular-nums", color: isOk ? "#161B26" : "#B91C1C", fontWeight: isOk ? 400 : 600 }}>
-      {value.toFixed(2)}
-      <span style={{ fontSize: 10, color: isOk ? "#9AA4B2" : "#DC2626", marginLeft: 3 }}>
-        ({dev >= 0 ? "+" : ""}{dev.toFixed(2)})
-      </span>
-    </span>
-  );
-}
-
-const COLUMNS: Column<HistoryItem>[] = [
-  { key: "date",     header: "입고일",   width: 110 },
-  { key: "supplier", header: "공급사",   width: 90 },
-  { key: "lot",      header: "LOT번호",  width: 140 },
-  { key: "material", header: "원자재",   width: 110 },
-  { key: "qty",      header: "수량",     width: 90, align: "right" },
-  {
-    key: "sn",
-    header: "SN 실측 (목표62.0)",
-    width: 150,
-    align: "right",
-    render: (v) => deviationCell(v as number, 62.0, 0.5),
-  },
-  {
-    key: "ag",
-    header: "AG 실측 (목표3.0)",
-    width: 150,
-    align: "right",
-    render: (v) => deviationCell(v as number, 3.0, 0.15),
-  },
-  {
-    key: "cu",
-    header: "CU 실측 (목표0.5)",
-    width: 150,
-    align: "right",
-    render: (v) => deviationCell(v as number, 0.5, 0.05),
-  },
-  {
-    key: "result",
-    header: "판정",
-    width: 80,
-    align: "center",
-    render: (_, row) => <StatusBadge variant={RESULT_MAP[row.result].variant} label={row.result} dot />,
-  },
+const MATERIAL_FILTER_OPTIONS = [
+  { value: "", label: "전체" },
+  ...(["Sn ingot", "Ag powder", "Cu wire", "Pb ingot"] as ReceiptMaterial[]).map((m) => ({
+    value: m,
+    label: m,
+  })),
 ];
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
-const SUPPLIERS = ["전체", "SUP_A", "SUP_B", "SUP_C", "SUP_D"];
-const MATERIALS = ["전체", "Sn (주석)", "Pb (납)", "Ag (은)", "Cu (구리)"];
-const RESULTS   = ["전체", "합격", "불합격", "보류"] as const;
+/**
+ * 기간 기본값 90일 — FR-R-02 가 기본을 정하지 않았다.
+ * 같은 그룹의 `/suppliers/{code}/stats?days=90` · `/deviation/*?days=90` 관례를 따랐다 (**판단**).
+ */
+const DEFAULT_DAYS = 90;
 
 export default function ReceivingHistoryPage() {
-  const [supplier, setSupplier] = useState("전체");
-  const [material, setMaterial] = useState("전체");
-  const [result,   setResult]   = useState<string>("전체");
-
-  const filtered = MOCK_HISTORY.filter((r) => {
-    if (supplier !== "전체" && r.supplier !== supplier) return false;
-    if (material !== "전체" && r.material !== material) return false;
-    if (result   !== "전체" && r.result   !== result)   return false;
-    return true;
+  const [draft, setDraft] = useState({
+    dateFrom: daysAgo(DEFAULT_DAYS),
+    dateTo: today(),
+    supplier: "",
+    material: "",
+    pageSize: "50",
   });
+  const [applied, setApplied] = useState(draft);
+  const [page, setPage] = useState(1);
 
-  const passCount = filtered.filter((r) => r.result === "합격").length;
-  const failCount = filtered.filter((r) => r.result === "불합격").length;
-  const holdCount = filtered.filter((r) => r.result === "보류").length;
-  const passRate  = filtered.length ? Math.round((passCount / filtered.length) * 100) : 0;
+  const rangeInverted =
+    draft.dateFrom !== "" && draft.dateTo !== "" && draft.dateFrom > draft.dateTo;
 
-  const selectStyle = {
-    padding: "6px 10px", fontSize: 12.5, border: "1px solid #E4E7EC",
-    borderRadius: 7, background: "#fff", color: "#161B26", cursor: "pointer", outline: "none",
-  };
+  const query: ReceiptQuery = useMemo(
+    () => ({
+      page,
+      page_size: Number(applied.pageSize),
+      supplier: (applied.supplier || undefined) as SupplierCode | undefined,
+      material: applied.material || undefined,
+      date_from: applied.dateFrom || undefined,
+      date_to: applied.dateTo || undefined,
+    }),
+    [page, applied]
+  );
+
+  const { data, loading, error, refetch } = useReceiptHistory(query);
+  const items = data?.items ?? [];
+
+  function applyFilters() {
+    if (rangeInverted) return;
+    setApplied(draft);
+    setPage(1);
+  }
+
+  function resetFilters() {
+    const next = {
+      dateFrom: daysAgo(DEFAULT_DAYS),
+      dateTo: today(),
+      supplier: "",
+      material: "",
+      pageSize: "50",
+    };
+    setDraft(next);
+    setApplied(next);
+    setPage(1);
+  }
+
+  /**
+   * 성분 실측 셀.
+   *
+   * ⚠ **편차 경고 색을 칠하지 않는다** (api-contract §8.3.1).
+   * `material='Sn ingot'` 의 `sn_pct` 는 99% 대이고, 배합 목표 62.0% 와의 차이는
+   * **품질 편차가 아니다.** `deviation_warn`(2.0/0.3/0.1)은 생산 LOT(`components`,
+   * FE-RT-08)에만 적용한다. 여기서는 측정값을 **있는 그대로** 보여준다.
+   */
+  function pctCell(value: number | null, digits: number) {
+    if (value === null || value === undefined) return <span style={{ color: T.textMuted }}>{DASH}</span>;
+    return <span style={{ fontVariantNumeric: "tabular-nums" }}>{num(value, digits)}</span>;
+  }
+
+  const columns: Column<ReceiptDto>[] = [
+    { key: "date", header: "입고일", width: 110 },
+    { key: "receipt_no", header: "입고번호", width: 130 },
+    { key: "supplier_code", header: "공급사", width: 90 },
+    { key: "material", header: "재료", width: 110 },
+    {
+      key: "quantity",
+      header: "수량",
+      width: 110,
+      align: "right",
+      render: (_v, row) => (
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>
+          {num(row.quantity, 2)} <span style={{ color: T.textMuted }}>{row.unit}</span>
+        </span>
+      ),
+    },
+    {
+      key: "sn_pct",
+      header: "Sn 실측 (%)",
+      width: 110,
+      align: "right",
+      render: (_v, row) => pctCell(row.sn_pct, 2),
+    },
+    {
+      key: "ag_pct",
+      header: "Ag 실측 (%)",
+      width: 110,
+      align: "right",
+      render: (_v, row) => pctCell(row.ag_pct, 3),
+    },
+    {
+      key: "cu_pct",
+      header: "Cu 실측 (%)",
+      width: 110,
+      align: "right",
+      render: (_v, row) => pctCell(row.cu_pct, 3),
+    },
+    {
+      key: "analysis_method",
+      header: "분석법",
+      width: 90,
+      render: (_v, row) =>
+        row.analysis_method ?? <span style={{ color: T.textMuted }}>{DASH}</span>,
+    },
+    {
+      key: "status",
+      header: "상태",
+      width: 90,
+      render: (_v, row) => (
+        <StatusBadge
+          variant={STATUS_VARIANT[row.status]}
+          label={RECEIPT_STATUS_LABELS[row.status] ?? row.status}
+        />
+      ),
+    },
+  ];
+
+  /** `Page<T>` 봉투에 합격/불합격 카운트가 없다 → 현재 페이지 집계임을 라벨에 적는다 */
+  const counts = useMemo(
+    () => ({
+      rows: items.length,
+      accepted: items.filter((r) => r.status === "accepted").length,
+      rejected: items.filter((r) => r.status === "rejected").length,
+      measured: items.filter(
+        (r) => r.sn_pct !== null || r.ag_pct !== null || r.cu_pct !== null
+      ).length,
+    }),
+    [items]
+  );
+
+  if (error) return <ScreenError message={error} onRetry={refetch} />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>원자재 입고 이력</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>성분 실측치 및 검사 판정 이력 조회</p>
-      </div>
+    <PageShell>
+      <PageHeader
+        title="입고 이력"
+        subtitle="기간·공급사·재료별 입고 이력 검색 (FR-R-02) · 조회 전용"
+      />
 
-      {/* Stats cards */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        {[
-          { label: "조회 건수", value: filtered.length, unit: "건", color: "#3A5BD9" },
-          { label: "합격",      value: passCount,        unit: "건", color: "#16A34A" },
-          { label: "불합격",    value: failCount,        unit: "건", color: "#DC2626" },
-          { label: "합격률",    value: passRate,         unit: "%",  color: "#7C3AED" },
-        ].map((s) => (
-          <div key={s.label} className="card" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 11.5, fontWeight: 600, color: "#687182", letterSpacing: "0.03em", textTransform: "uppercase" as const }}>{s.label}</span>
-            <span style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-              {s.value}<span style={{ fontSize: 13, fontWeight: 500, color: "#9AA4B2", marginLeft: 3 }}>{s.unit}</span>
-            </span>
-          </div>
-        ))}
+        <KpiCard label="조회 건수 (현재 페이지 기준)" value={int(counts.rows)} unit="건" />
+        <KpiCard label="수락 (현재 페이지 기준)" value={int(counts.accepted)} unit="건" />
+        <KpiCard label="거부 (현재 페이지 기준)" value={int(counts.rejected)} unit="건" />
+        <KpiCard label="성분 측정 완료 (현재 페이지 기준)" value={int(counts.measured)} unit="건" />
       </div>
 
-      {/* Filter + Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 16px", borderBottom: "1px solid #E4E7EC", flexWrap: "wrap" as const }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26", flex: 1, minWidth: 100 }}>이력 조회</span>
-          <label style={{ fontSize: 12, color: "#687182", display: "flex", alignItems: "center", gap: 6 }}>
-            공급사
-            <select style={selectStyle} value={supplier} onChange={(e) => setSupplier(e.target.value)}>
-              {SUPPLIERS.map((s) => <option key={s}>{s}</option>)}
-            </select>
-          </label>
-          <label style={{ fontSize: 12, color: "#687182", display: "flex", alignItems: "center", gap: 6 }}>
-            원자재
-            <select style={selectStyle} value={material} onChange={(e) => setMaterial(e.target.value)}>
-              {MATERIALS.map((m) => <option key={m}>{m}</option>)}
-            </select>
-          </label>
-          <label style={{ fontSize: 12, color: "#687182", display: "flex", alignItems: "center", gap: 6 }}>
-            판정
-            <select style={selectStyle} value={result} onChange={(e) => setResult(e.target.value)}>
-              {RESULTS.map((r) => <option key={r}>{r}</option>)}
-            </select>
-          </label>
-          <button style={{ padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6, border: "1px solid #E4E7EC", background: "#F8F9FB", color: "#687182", cursor: "pointer" }}>
-            CSV 내보내기
-          </button>
-        </div>
-        <DataTable columns={COLUMNS} data={filtered} rowKey={(r) => r.id} stickyHeader />
-        <div style={{ padding: "10px 16px", borderTop: "1px solid #F2F4F7", display: "flex", gap: 20 }}>
-          <span style={{ fontSize: 11.5, color: "#687182" }}>
-            합격 <strong style={{ color: "#16A34A" }}>{passCount}</strong> · 불합격 <strong style={{ color: "#DC2626" }}>{failCount}</strong> · 보류 <strong style={{ color: "#B45309" }}>{holdCount}</strong>
+      <FilterBar>
+        <Field label="시작일" htmlFor="rh-from">
+          <DateInput
+            id="rh-from"
+            value={draft.dateFrom}
+            onChange={(v) => setDraft((d) => ({ ...d, dateFrom: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="종료일" htmlFor="rh-to">
+          <DateInput
+            id="rh-to"
+            value={draft.dateTo}
+            onChange={(v) => setDraft((d) => ({ ...d, dateTo: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="공급사" htmlFor="rh-supplier">
+          <Select
+            id="rh-supplier"
+            value={draft.supplier}
+            onChange={(v) => setDraft((d) => ({ ...d, supplier: v }))}
+            options={SUPPLIER_FILTER_OPTIONS}
+            width={130}
+          />
+        </Field>
+        <Field label="재료" htmlFor="rh-material">
+          <Select
+            id="rh-material"
+            value={draft.material}
+            onChange={(v) => setDraft((d) => ({ ...d, material: v }))}
+            options={MATERIAL_FILTER_OPTIONS}
+            width={140}
+          />
+        </Field>
+        <Field label="페이지 크기" htmlFor="rh-size">
+          <Select
+            id="rh-size"
+            value={draft.pageSize}
+            onChange={(v) => setDraft((d) => ({ ...d, pageSize: v }))}
+            options={PAGE_SIZE_OPTIONS}
+            width={110}
+          />
+        </Field>
+        <button type="button" className="btn pri" onClick={applyFilters} disabled={rangeInverted}>
+          조회
+        </button>
+        <button type="button" className="btn" onClick={resetFilters}>
+          초기화
+        </button>
+        {rangeInverted && (
+          <span style={{ fontSize: 11.5, color: T.error, fontWeight: 600, alignSelf: "center" }}>
+            종료일이 시작일보다 앞설 수 없습니다
           </span>
-        </div>
+        )}
+      </FilterBar>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SectionState
+          loading={loading}
+          error={null}
+          empty={items.length === 0}
+          emptyText="조회 조건에 해당하는 입고 이력이 없습니다"
+          minHeight={220}
+        >
+          <DataTable columns={columns} data={items} rowKey={(r) => r.receipt_no} />
+        </SectionState>
+
+        {items.length === 0 && !loading && (
+          <button type="button" className="btn" style={{ alignSelf: "center" }} onClick={resetFilters}>
+            필터 초기화
+          </button>
+        )}
+
+        {data && (
+          <Pagination page={data.page} pageSize={data.page_size} total={data.total} onPage={setPage} />
+        )}
+
+        {/* 성분 해석 주의 — 계약 §8.3.1 을 화면에도 적어둔다 */}
+        <p style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.7, margin: 0 }}>
+          ※ 입고 성분은 <strong>입고 시점 원재료</strong>의 실측값입니다. 원재료는 단일 원소라
+          배합 목표값(Sn 62.0% 등)과의 차이가 품질 편차를 뜻하지 않으므로{" "}
+          <strong>편차 경고를 적용하지 않습니다</strong> (api-contract §8.3.1). 배합 LOT 의 성분
+          편차는 <strong>성분 데이터 관리</strong> 화면에서 확인하세요. 검사 전(`검사중`) 항목은
+          측정값이 없어 {DASH} 로 표시됩니다.
+        </p>
       </div>
-    </div>
+    </PageShell>
   );
 }

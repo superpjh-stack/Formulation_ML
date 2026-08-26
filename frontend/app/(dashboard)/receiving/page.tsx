@@ -1,169 +1,439 @@
 "use client";
 
-import { useState } from "react";
+/**
+ * FE-RT-06 — 입고 현황 · `/receiving` · FR-R-01
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-06 · 계약: `api-contract.md` §8.3 (G2).
+ * SF-TD3 에 와이어프레임 없음 — FR-R-01 본문 + `ReceiptIn`/`ReceiptDto` 에서 도출했다.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - `MOCK_RECEIVING` 8행 하드코딩 제거 → `GET /receipts` (`useReceipts`) 실 연동
+ *   - 상태 5값(대기/검사중/합격/불합격/보류) → 계약 **3값** (`accepted`/`rejected`/`inspecting`)
+ *   - `SUP_D (글로벌메탈)` 제거 — 공급사는 `SUP_A`/`SUP_B`/`SUP_C` 3개뿐이다
+ *   - 재료 자유 문자열 → **4종 select** (`Sn ingot`/`Ag powder`/`Cu wire`/`Pb ingot`, db-schema §6.3)
+ *   - 서버 필터(공급사·상태·기간) + `Page<T>` 페이징 **신규**
+ *   - `입고 등록` 모달 **신규** (`POST /receipts`)
+ *   - 행별 합격/불합격/보류 3버튼 + `일괄 저장` 제거 — 상태 변경 엔드포인트가 아직 없다 (TODO-G1-006).
+ *     저장되지 않는 버튼을 남겨두면 "저장한 줄 알았는데 안 된" 상태가 된다
+ *   - 예정시간 열 제거 (`receipts` 에 컬럼 없음) · 하드코딩 `"검사 대기 중인 항목 2건"` 배너 제거
+ */
+
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { DataTable, type Column } from "@/components/ui/DataTable";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
 import { KpiCard } from "@/components/ui/KpiCard";
-import { DataTable, Column } from "@/components/ui/DataTable";
+import { Modal } from "@/components/ui/Modal";
+import { NumericField } from "@/components/ui/NumericField";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { T } from "@/components/ui/tokens";
+import { useReceipts } from "@/hooks/useKoryoData";
+import { ApiError, createReceipt, type ReceiptQuery } from "@/lib/koryo-api";
+import { RECEIPT_STATUS_LABELS } from "@/types/api";
+import type {
+  ReceiptDto,
+  ReceiptIn,
+  ReceiptMaterial,
+  ReceiptStatus,
+  SupplierCode,
+} from "@/types/api";
+import {
+  DateInput,
+  Field,
+  FilterBar,
+  PAGE_SIZE_OPTIONS,
+  PageHeader,
+  PageShell,
+  Pagination,
+  SUPPLIER_CODES,
+  SUPPLIER_FILTER_OPTIONS,
+  ScreenError,
+  SectionState,
+  Select,
+  hasRole,
+  int,
+  num,
+  today,
+  useRole,
+} from "../_g1/ui";
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+// ── 계약 고정값 ───────────────────────────────────────────────────────────────
 
-interface ReceivingItem {
-  id: string;
-  supplier: string;
-  material: string;
-  qty: string;
-  scheduledTime: string;
-  status: "대기" | "검사중" | "합격" | "불합격" | "보류";
-}
-
-const MOCK_RECEIVING: ReceivingItem[] = [
-  { id: "RC-2026-0601", supplier: "SUP_A (한국금속)", material: "Sn (주석 99.9%)", qty: "500 kg", scheduledTime: "08:00", status: "합격" },
-  { id: "RC-2026-0602", supplier: "SUP_B (동양금속)", material: "Pb (납 99.5%)", qty: "300 kg", scheduledTime: "08:30", status: "합격" },
-  { id: "RC-2026-0603", supplier: "SUP_A (한국금속)", material: "Ag (은 99.9%)", qty: "50 kg", scheduledTime: "09:00", status: "합격" },
-  { id: "RC-2026-0604", supplier: "SUP_C (대성소재)", material: "Cu (구리 99.5%)", qty: "200 kg", scheduledTime: "09:30", status: "합격" },
-  { id: "RC-2026-0605", supplier: "SUP_B (동양금속)", material: "Sn (주석 99.9%)", qty: "400 kg", scheduledTime: "10:00", status: "합격" },
-  { id: "RC-2026-0606", supplier: "SUP_D (글로벌메탈)", material: "Ag (은 99.9%)", qty: "30 kg", scheduledTime: "10:30", status: "합격" },
-  { id: "RC-2026-0607", supplier: "SUP_A (한국금속)", material: "Pb (납 99.5%)", qty: "150 kg", scheduledTime: "13:00", status: "검사중" },
-  { id: "RC-2026-0608", supplier: "SUP_C (대성소재)", material: "Sn (주석 99.9%)", qty: "600 kg", scheduledTime: "14:00", status: "대기" },
-];
-
-const STATUS_MAP: Record<ReceivingItem["status"], { variant: "green" | "amber" | "red" | "blue" | "gray"; label: string }> = {
-  합격:   { variant: "green", label: "합격" },
-  불합격: { variant: "red",   label: "불합격" },
-  보류:   { variant: "amber", label: "보류" },
-  검사중: { variant: "blue",  label: "검사중" },
-  대기:   { variant: "gray",  label: "대기" },
+/** FR-R-01 의 3상태. `대기`·`보류` 는 요구사항에 없다 */
+const STATUS_VARIANT: Record<ReceiptStatus, "green" | "red" | "amber"> = {
+  accepted: "green",
+  rejected: "red",
+  inspecting: "amber",
 };
 
-const COLUMNS: Column<ReceivingItem>[] = [
-  { key: "id",            header: "입고번호",   width: 140 },
-  { key: "supplier",      header: "공급사",     width: 180 },
-  { key: "material",      header: "원자재",     width: 180 },
-  { key: "qty",           header: "수량",       width: 90, align: "right" },
-  { key: "scheduledTime", header: "예정시간",   width: 90, align: "center" },
-  {
-    key: "status",
-    header: "상태",
-    width: 90,
-    align: "center",
-    render: (_, row) => {
-      const m = STATUS_MAP[row.status];
-      return <StatusBadge variant={m.variant} label={m.label} dot />;
-    },
-  },
-  {
-    key: "id",
-    header: "검사 결과 입력",
-    width: 180,
-    align: "center",
-    render: (_, row) =>
-      row.status === "검사중" || row.status === "대기" ? (
-        <InspectButtons id={row.id} />
-      ) : (
-        <span style={{ color: "#C2C9D6", fontSize: 12 }}>—</span>
-      ),
-  },
+const STATUS_FILTER_OPTIONS = [
+  { value: "", label: "전체" },
+  ...(Object.keys(RECEIPT_STATUS_LABELS) as ReceiptStatus[]).map((s) => ({
+    value: s,
+    label: RECEIPT_STATUS_LABELS[s],
+  })),
 ];
 
-function InspectButtons({ id }: { id: string }) {
-  const [selected, setSelected] = useState<string | null>(null);
-  const btns: { label: string; color: string; bg: string; border: string }[] = [
-    { label: "합격", color: "#15803D", bg: "#ECFDF3", border: "#86EFAC" },
-    { label: "불합격", color: "#B91C1C", bg: "#FEF1F2", border: "#FCA5A5" },
-    { label: "보류", color: "#B45309", bg: "#FEF6E7", border: "#FCD34D" },
-  ];
-  return (
-    <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
-      {btns.map((b) => (
-        <button
-          key={b.label}
-          onClick={() => setSelected(b.label)}
-          style={{
-            padding: "3px 8px",
-            fontSize: 11,
-            fontWeight: 600,
-            borderRadius: 6,
-            border: `1px solid ${selected === b.label ? b.border : "#E4E7EC"}`,
-            background: selected === b.label ? b.bg : "#fff",
-            color: selected === b.label ? b.color : "#687182",
-            cursor: "pointer",
-            transition: "all 0.1s",
-          }}
-        >
-          {b.label}
-        </button>
-      ))}
-    </div>
-  );
+/** db-schema §6.3 이 `material VARCHAR(50)` 설명에 명시한 4종 */
+const MATERIALS: ReceiptMaterial[] = ["Sn ingot", "Ag powder", "Cu wire", "Pb ingot"];
+
+/** `receipts.unit VARCHAR(10) DEFAULT 'kg'` */
+const UNITS = ["kg", "g", "ton"];
+
+// ── 등록 폼 ──────────────────────────────────────────────────────────────────
+
+interface ReceiptForm {
+  date: string;
+  supplier_code: SupplierCode;
+  material: ReceiptMaterial;
+  quantity: string;
+  unit: string;
+  status: ReceiptStatus;
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
+function emptyForm(): ReceiptForm {
+  return {
+    date: today(),
+    supplier_code: "SUP_A",
+    material: "Sn ingot",
+    quantity: "",
+    unit: "kg",
+    status: "inspecting",
+  };
+}
+
+// ── 페이지 ────────────────────────────────────────────────────────────────────
 
 export default function ReceivingPage() {
-  const counts = {
-    total:   MOCK_RECEIVING.length,
-    done:    MOCK_RECEIVING.filter((r) => r.status === "합격" || r.status === "불합격" || r.status === "보류").length,
-    waiting: MOCK_RECEIVING.filter((r) => r.status === "대기" || r.status === "검사중").length,
-    fail:    MOCK_RECEIVING.filter((r) => r.status === "불합격").length,
-  };
+  const role = useRole();
+  const canWrite = hasRole(role, "admin", "manufacture");
+
+  // 편집 중인 필터(draft) 와 조회에 실제로 쓰인 필터(applied)를 나눈다.
+  // 날짜를 타이핑하는 중간 상태로 요청이 나가지 않게 한다.
+  const [draft, setDraft] = useState({
+    supplier: "",
+    status: "",
+    dateFrom: "",
+    dateTo: "",
+    pageSize: "50",
+  });
+  const [applied, setApplied] = useState(draft);
+  const [page, setPage] = useState(1);
+
+  const rangeInverted =
+    draft.dateFrom !== "" && draft.dateTo !== "" && draft.dateFrom > draft.dateTo;
+
+  const query: ReceiptQuery = useMemo(
+    () => ({
+      page,
+      page_size: Number(applied.pageSize),
+      supplier: (applied.supplier || undefined) as SupplierCode | undefined,
+      status: (applied.status || undefined) as ReceiptStatus | undefined,
+      date_from: applied.dateFrom || undefined,
+      date_to: applied.dateTo || undefined,
+    }),
+    [page, applied]
+  );
+
+  const { data, loading, error, refetch } = useReceipts(query);
+  const items = data?.items ?? [];
+
+  /** 필터를 바꾸면 항상 1페이지로 되돌린다 (plan-g1 §5) */
+  function applyFilters() {
+    if (rangeInverted) return;
+    setApplied(draft);
+    setPage(1);
+  }
+
+  function resetFilters() {
+    const next = { supplier: "", status: "", dateFrom: "", dateTo: "", pageSize: "50" };
+    setDraft(next);
+    setApplied(next);
+    setPage(1);
+  }
+
+  // ── 등록 모달 ───────────────────────────────────────────────────────────────
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form, setForm] = useState<ReceiptForm>(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+
+  const quantityNum = Number(form.quantity);
+  const quantityValid = form.quantity.trim() !== "" && Number.isFinite(quantityNum) && quantityNum > 0;
+  const canSave = canWrite && quantityValid && form.date !== "" && !saving;
+
+  function openModal() {
+    setForm(emptyForm());
+    setFormError(null);
+    setModalOpen(true);
+  }
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaving(true);
+    setFormError(null);
+    try {
+      const body: ReceiptIn = {
+        date: form.date,
+        supplier_code: form.supplier_code,
+        material: form.material,
+        quantity: quantityNum,
+        unit: form.unit,
+        status: form.status,
+      };
+      await createReceipt(body);
+      // 🔴 저장이 **실제로 성공한 뒤에만** 토스트를 띄운다.
+      setModalOpen(false);
+      refetch();
+      toast.success("입고가 등록되었습니다");
+    } catch (err) {
+      // 실패 시 모달을 닫지 않는다 — 사용자가 방금 친 값 옆에 오류가 붙어야 고칠 수 있다
+      const status = err instanceof ApiError ? err.status : 0;
+      const message = err instanceof Error ? err.message : "입고 등록에 실패했습니다";
+      setFormError(
+        status === 409
+          ? "입고번호가 중복됩니다"
+          : status === 403
+            ? "접근 권한이 없습니다"
+            : status === 503
+              ? "서비스 일시 중단"
+              : message
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── 표 ──────────────────────────────────────────────────────────────────────
+  const columns: Column<ReceiptDto>[] = [
+    { key: "receipt_no", header: "입고번호", width: 130 },
+    { key: "date", header: "입고일", width: 110 },
+    { key: "supplier_code", header: "공급사", width: 90 },
+    { key: "material", header: "재료", width: 120 },
+    {
+      key: "quantity",
+      header: "수량",
+      width: 100,
+      align: "right",
+      render: (_v, row) => num(row.quantity, 2),
+    },
+    { key: "unit", header: "단위", width: 70 },
+    {
+      key: "status",
+      header: "상태",
+      width: 90,
+      render: (_v, row) => (
+        <StatusBadge
+          variant={STATUS_VARIANT[row.status]}
+          label={RECEIPT_STATUS_LABELS[row.status] ?? row.status}
+        />
+      ),
+    },
+  ];
+
+  /**
+   * 응답에 요약 집계 필드가 없다 (`Page<T>` 는 `total` 만 준다).
+   * 그래서 **현재 페이지의 `items`** 로만 센다 — 라벨에 그 사실을 반드시 적는다.
+   */
+  const counts = useMemo(
+    () => ({
+      total: items.length,
+      accepted: items.filter((r) => r.status === "accepted").length,
+      inspecting: items.filter((r) => r.status === "inspecting").length,
+      rejected: items.filter((r) => r.status === "rejected").length,
+    }),
+    [items]
+  );
+
+  // 화면 전체가 실패했다 — 계약 문구 + 원문 메시지 + 재시도
+  if (error) return <ScreenError message={error} onRetry={refetch} />;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0, lineHeight: 1.3 }}>
-          입고관리
-        </h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          오늘 입고 현황 · 2026년 6월 27일
-        </p>
-      </div>
-
-      {/* KPI Row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        <KpiCard label="입고 건수" value={counts.total} unit="건" trend="neutral" trendValue="오늘" accentColor="#3A5BD9" />
-        <KpiCard label="검사 완료" value={counts.done} unit="건" trend="up" trendValue="+1건" accentColor="#16A34A" />
-        <KpiCard label="검사 대기" value={counts.waiting} unit="건" trend="neutral" trendValue="진행중" accentColor="#F59E0B" />
-        <KpiCard label="불합격" value={counts.fail} unit="건" trend="neutral" trendValue="이상없음" accentColor="#DC2626" />
-      </div>
-
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "14px 16px", borderBottom: "1px solid #E4E7EC" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26", flex: 1 }}>입고 예정 목록</span>
-          <span style={{ fontSize: 12, color: "#687182" }}>총 {MOCK_RECEIVING.length}건</span>
+    <PageShell>
+      <PageHeader
+        title="입고 현황"
+        subtitle="공급사별 원재료 입고 현황 조회 · 상태(수락/거부/검사중) 필터 (FR-R-01)"
+        actions={
           <button
-            style={{
-              padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6,
-              border: "1px solid #3A5BD9", background: "#3A5BD9", color: "#fff", cursor: "pointer",
-            }}
+            type="button"
+            className="btn pri"
+            onClick={openModal}
+            disabled={!canWrite}
+            title={canWrite ? undefined : "입고 등록 권한이 없습니다 (admin·manufacture)"}
           >
-            일괄 저장
+            입고 등록
           </button>
-        </div>
-        <DataTable columns={COLUMNS} data={MOCK_RECEIVING} rowKey={(r) => r.id} stickyHeader />
+        }
+      />
+
+      {/* 요약 — 현재 페이지 기준임을 라벨에 명시한다 */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+        <KpiCard label="총 입고 (현재 페이지 기준)" value={int(counts.total)} unit="건" />
+        <KpiCard label="수락 (현재 페이지 기준)" value={int(counts.accepted)} unit="건" />
+        <KpiCard label="검사중 (현재 페이지 기준)" value={int(counts.inspecting)} unit="건" />
+        <KpiCard label="거부 (현재 페이지 기준)" value={int(counts.rejected)} unit="건" />
       </div>
 
-      {/* Info banner */}
-      <div
-        style={{
-          background: "#EEF1FD",
-          border: "1px solid #C7D2F8",
-          borderRadius: 10,
-          padding: "12px 16px",
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-        }}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-          <circle cx="8" cy="8" r="7" stroke="#3A5BD9" strokeWidth="1.4" />
-          <path d="M8 5v4M8 10.5v.5" stroke="#3A5BD9" strokeWidth="1.4" strokeLinecap="round" />
-        </svg>
-        <span style={{ fontSize: 12.5, color: "#1D4ED8" }}>
-          검사 대기 중인 항목 <strong>2건</strong>이 있습니다. 검사 결과를 입력하고 일괄 저장하세요.
-        </span>
+      <FilterBar>
+        <Field label="공급사" htmlFor="rc-supplier">
+          <Select
+            id="rc-supplier"
+            value={draft.supplier}
+            onChange={(v) => setDraft((d) => ({ ...d, supplier: v }))}
+            options={SUPPLIER_FILTER_OPTIONS}
+            width={130}
+          />
+        </Field>
+        <Field label="상태" htmlFor="rc-status">
+          <Select
+            id="rc-status"
+            value={draft.status}
+            onChange={(v) => setDraft((d) => ({ ...d, status: v }))}
+            options={STATUS_FILTER_OPTIONS}
+            width={130}
+          />
+        </Field>
+        <Field label="시작일" htmlFor="rc-from">
+          <DateInput
+            id="rc-from"
+            value={draft.dateFrom}
+            onChange={(v) => setDraft((d) => ({ ...d, dateFrom: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="종료일" htmlFor="rc-to">
+          <DateInput
+            id="rc-to"
+            value={draft.dateTo}
+            onChange={(v) => setDraft((d) => ({ ...d, dateTo: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="페이지 크기" htmlFor="rc-size">
+          <Select
+            id="rc-size"
+            value={draft.pageSize}
+            onChange={(v) => setDraft((d) => ({ ...d, pageSize: v }))}
+            options={PAGE_SIZE_OPTIONS}
+            width={110}
+          />
+        </Field>
+        <button type="button" className="btn pri" onClick={applyFilters} disabled={rangeInverted}>
+          조회
+        </button>
+        <button type="button" className="btn" onClick={resetFilters}>
+          초기화
+        </button>
+        {rangeInverted && (
+          <span style={{ fontSize: 11.5, color: T.error, fontWeight: 600, alignSelf: "center" }}>
+            종료일이 시작일보다 앞설 수 없습니다
+          </span>
+        )}
+      </FilterBar>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SectionState
+          loading={loading}
+          error={null}
+          empty={items.length === 0}
+          emptyText="조회 조건에 해당하는 입고 내역이 없습니다"
+          minHeight={220}
+        >
+          <DataTable columns={columns} data={items} rowKey={(r) => r.receipt_no} />
+        </SectionState>
+
+        {items.length === 0 && !loading && (
+          <button type="button" className="btn" style={{ alignSelf: "center" }} onClick={resetFilters}>
+            필터 초기화
+          </button>
+        )}
+
+        {data && (
+          <Pagination page={data.page} pageSize={data.page_size} total={data.total} onPage={setPage} />
+        )}
       </div>
-    </div>
+
+      {/* 등록 모달 — 상태 변경 엔드포인트가 없으므로 상태는 **등록 시점에만** 지정한다 */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="입고 등록"
+        description="POST /api/v1/receipts"
+        width={520}
+        footerVariant="surface"
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setModalOpen(false)} disabled={saving}>
+              취소
+            </button>
+            <button type="button" className="btn pri" onClick={handleSave} disabled={!canSave}>
+              {saving ? "저장 중…" : "저장"}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {formError && <ErrorAlert message={formError} />}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Field label="입고일">
+              <DateInput
+                value={form.date}
+                onChange={(v) => setForm((f) => ({ ...f, date: v }))}
+                width={undefined}
+              />
+            </Field>
+            <Field label="공급사">
+              <Select
+                value={form.supplier_code}
+                onChange={(v) => setForm((f) => ({ ...f, supplier_code: v as SupplierCode }))}
+                options={SUPPLIER_CODES.map((c) => ({ value: c, label: c }))}
+              />
+            </Field>
+            <Field label="재료">
+              <Select
+                value={form.material}
+                onChange={(v) => setForm((f) => ({ ...f, material: v as ReceiptMaterial }))}
+                options={MATERIALS.map((m) => ({ value: m, label: m }))}
+              />
+            </Field>
+            <NumericField
+              label="수량"
+              value={form.quantity}
+              onChange={(v) => setForm((f) => ({ ...f, quantity: v }))}
+              unit={form.unit}
+              min={0}
+              step="0.01"
+              placeholder="0.00"
+              error={
+                form.quantity.trim() !== "" && !quantityValid ? "수량은 0보다 커야 합니다" : undefined
+              }
+            />
+            <Field label="단위">
+              <Select
+                value={form.unit}
+                onChange={(v) => setForm((f) => ({ ...f, unit: v }))}
+                options={UNITS.map((u) => ({ value: u, label: u }))}
+              />
+            </Field>
+            <Field label="상태">
+              <Select
+                value={form.status}
+                onChange={(v) => setForm((f) => ({ ...f, status: v as ReceiptStatus }))}
+                options={(Object.keys(RECEIPT_STATUS_LABELS) as ReceiptStatus[]).map((s) => ({
+                  value: s,
+                  label: RECEIPT_STATUS_LABELS[s],
+                }))}
+              />
+            </Field>
+          </div>
+
+          <span style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.6 }}>
+            입고번호(`receipt_no`)는 서버가 채번합니다. 등록 후 상태 변경 기능은 대응
+            엔드포인트가 확정되면 제공됩니다 (TODO-G1-006).
+          </span>
+        </div>
+      </Modal>
+    </PageShell>
   );
 }

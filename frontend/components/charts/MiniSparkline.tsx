@@ -3,7 +3,10 @@
 interface MiniSparklineProps {
   /** 렌더링할 숫자 배열 */
   data: number[];
-  /** 라인 및 면적 색상 (기본: #3b82f6) */
+  /**
+   * 라인 및 면적 색상. 기본값은 globals.css 의 Primary 토큰(#3A5BD9).
+   * SF-TD3 §1.1 팔레트 외의 임의 색상을 넘기지 않는다.
+   */
   color?: string;
   /** SVG 높이 px (기본: 30) */
   height?: number;
@@ -17,7 +20,7 @@ interface MiniSparklineProps {
 
 export default function MiniSparkline({
   data,
-  color = '#3b82f6',
+  color = 'var(--color-primary)',
   height = 30,
   width = 80,
   fillOpacity = 0.15,

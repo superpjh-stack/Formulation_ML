@@ -1,207 +1,258 @@
 "use client";
 
-import { useState } from "react";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+/**
+ * FE-RT-40 — 의사결정 지원 · `/agent/decision` · FR-AG-03 (**선택**)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-40 · 공통 전제 §G9-1·§G9-2. 와이어프레임 없음.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **현 구현과 계약의 형태가 달랐다.**
+ *
+ * 계약은 *"LOT 하나를 주면 원인과 방안을 돌려주는 함수"* 다
+ * (`POST /agents/decision {lot_id}` → `{root_causes[], recommendations[], confidence}`).
+ * 현 구현은 *"AI 가 알아서 만들어 둔 액션 목록을 채택/기각하는 워크플로"* 였다.
+ * **계약 형태를 따른다** — 워크플로로 가려면 `agent_recommendations` 테이블이 필요하고
+ * 그건 CR-DB-002 사안이다 (db-schema §6.2).
+ *
+ * 라운드 2 에서 지운 것:
+ *   - `INITIAL_DECISIONS` 5건 하드코딩 (API 호출 0건이었다)
+ *   - `act()` 채택/기각 — **로컬 state 만 바꿔 저장되는 것처럼 보였다.**
+ *     새로고침하면 되돌아간다. 저장할 엔드포인트도 테이블도 없다
+ *   - 근거 없는 수치: *"재고량 750kg"*(재고 테이블 없음) · *"납기 6/29"* ·
+ *     *"MAPE 4.1%"* · *"SUP_D 순도 99.97%"* — **`SUP_D` 는 존재하지 않는 공급사다**
+ *     (db-schema §4.2: SUP_A/B/C 3사)
+ *   - 우선순위(P1/P2/P3)·카테고리·소요기간(즉시/단기/중기)·예상효과 5필드 (계약에 없다)
+ *
+ * 신설한 것:
+ *   - **대상 LOT 드롭다운** — 계약의 필수 필드 `lot_id` 를 보낼 방법이 없는 구조였다.
+ *     선택지는 `GET /api/v1/lots?status=fail` **실 데이터**로 채운다 (하드코딩 아님)
+ *   - **신뢰도(`confidence`)** — 계약에 있는데 화면에 없었다
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface Decision {
-  id: string;
-  priority: 1 | 2 | 3;
-  title: string;
-  category: "품질" | "배합" | "설비" | "출하" | "공급망";
-  summary: string;
-  basis: string[];
-  expectedEffect: string;
-  effort: "즉시" | "단기" | "중기";
-  status: "대기" | "채택" | "기각";
-  generatedAt: string;
-}
+import { useCallback, useMemo, useState } from "react";
+import { requestAgentDecision } from "@/lib/koryo-api";
+import { useLots } from "@/hooks/useKoryoData";
+import { T } from "@/components/ui/tokens";
+import { Field, FilterBar, InlineError, PageHeader, PageShell, Section, dateOnly } from "../../_g1/ui";
+import {
+  PendingBanner,
+  PendingResult,
+  errStatus,
+  errText,
+  isNotImplemented,
+} from "../../_g3/ui";
 
-const INITIAL_DECISIONS: Decision[] = [
-  {
-    id: "DEC-001",
-    priority: 1,
-    title: "LOT-2026-0623 재배합 또는 폐기 결정",
-    category: "품질",
-    summary: "Pb 함량 40.9% 초과로 불합격 판정된 LOT에 대한 처리 결정이 필요합니다.",
-    basis: ["성분 검사 결과: Pb 40.9% (규격 40.0±0.5%)", "현재 재고량: 750 kg", "현대모비스 납기: 6/29"],
-    expectedEffect: "재배합 시 품질 합격 가능성 82%. 납기 1일 지연 예상. 폐기 시 750 kg 손실.",
-    effort: "즉시",
-    status: "대기",
-    generatedAt: "2026-06-27 11:30",
-  },
-  {
-    id: "DEC-002",
-    priority: 1,
-    title: "배합 계량 센서 교정 실시",
-    category: "설비",
-    summary: "최근 3건의 성분 편차가 계량 오차에서 기인함. 즉시 센서 교정 권장.",
-    basis: ["LOT-0623 Pb 편차 +0.9%", "LOT-0607 Sn 편차 +0.8%", "LOT-0592 Pb 편차 +0.7% (3건 연속 양방향 편차)"],
-    expectedEffect: "교정 후 성분 편차 ±0.3% 이내 유지 예상. 불합격률 약 1.5%p 감소.",
-    effort: "즉시",
-    status: "대기",
-    generatedAt: "2026-06-27 11:32",
-  },
-  {
-    id: "DEC-003",
-    priority: 2,
-    title: "SUP_B 납(Pb) 공급사 대체 검토",
-    category: "공급망",
-    summary: "SUP_B 공급 Pb의 순도 편차가 최근 3개월간 증가 추세. 대체 공급사 발굴 권장.",
-    basis: ["SUP_B Pb 순도 표준편차: 1월 0.02% → 6월 0.08%", "관련 클레임 2건 (CLM-001, CLM-004)", "대체 후보: SUP_D (순도 99.97% 인증)"],
-    expectedEffect: "공급 품질 안정화로 성분불량 클레임 연간 2~3건 감소 예상.",
-    effort: "중기",
-    status: "대기",
-    generatedAt: "2026-06-27 10:15",
-  },
-  {
-    id: "DEC-004",
-    priority: 2,
-    title: "GradientBoosting 모델 재학습 실행",
-    category: "배합",
-    summary: "최근 30일 실제 품질점수와 예측값 MAPE가 4.1%로 목표(3.0%) 초과.",
-    basis: ["현재 MAPE: 4.1% (목표 3.0% 초과)", "학습 데이터: 2개월 전 기준", "신규 원자재 공급사(SUP_C) 데이터 미반영"],
-    expectedEffect: "재학습 후 MAPE 2.5~3.0% 달성 예측. 배합 추천 정확도 향상.",
-    effort: "단기",
-    status: "채택",
-    generatedAt: "2026-06-26 16:00",
-  },
-  {
-    id: "DEC-005",
-    priority: 3,
-    title: "출하 검사 체크리스트 디지털 전환",
-    category: "출하",
-    summary: "현재 수기 작성 체크리스트를 시스템 내 디지털 입력으로 전환하면 오류 감소 예상.",
-    basis: ["수기 입력 오류 발생: 월 평균 2.3건", "INS-005 기록 오류 사례", "디지털 전환 시 자동 검증 가능"],
-    expectedEffect: "기록 오류 90% 감소. 검사 결과 실시간 DB 반영.",
-    effort: "중기",
-    status: "기각",
-    generatedAt: "2026-06-25 14:00",
-  },
-];
+type Result =
+  | { kind: "pending"; message: string }
+  | { kind: "error"; message: string; status: number | null }
+  | { kind: "ok"; rootCauses: string[]; recommendations: string[]; confidence: number | null };
 
-const PRIORITY_COLORS: Record<number, { bg: string; color: string; label: string }> = {
-  1: { bg: "#FEF1F2", color: "#B91C1C", label: "긴급" },
-  2: { bg: "#FEF6E7", color: "#B45309", label: "중요" },
-  3: { bg: "#F2F4F7", color: "#5B6573", label: "일반" },
-};
+export default function AgentDecisionPage() {
+  const [lotId, setLotId] = useState("");
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<Result | null>(null);
 
-const CAT_COLORS: Record<Decision["category"], { bg: string; color: string }> = {
-  품질:  { bg: "#ECFDF3", color: "#15803D" },
-  배합:  { bg: "#EEF1FD", color: "#1D4ED8" },
-  설비:  { bg: "#F5F1FE", color: "#6D28D9" },
-  출하:  { bg: "#FEF6E7", color: "#B45309" },
-  공급망: { bg: "#F0F9FF", color: "#0369A1" },
-};
+  /**
+   * 불량 LOT 목록 — 요구사항 문장이 "불량 LOT 원인 분석" 이고
+   * 계약 요청 본문도 `{lot_id}` 단건이다. 두 문서가 일치한다 (§2).
+   */
+  const lots = useLots({ status: "fail", page_size: 200 });
 
-const EFFORT_V: Record<Decision["effort"], "red" | "amber" | "blue"> = {
-  즉시: "red", 단기: "amber", 중기: "blue",
-};
+  const lotOptions = useMemo(
+    () => (lots.data?.items ?? []).map((l) => ({ value: l.lot_id, date: l.date })),
+    [lots.data]
+  );
 
-export default function DecisionPage() {
-  const [decisions, setDecisions] = useState(INITIAL_DECISIONS);
-  const [filter, setFilter] = useState<"전체" | Decision["status"]>("전체");
+  const canRun = lotId !== "" && !running;
 
-  function act(id: string, action: "채택" | "기각") {
-    setDecisions((p) => p.map((d) => d.id === id ? { ...d, status: action } : d));
-  }
-
-  const filtered = filter === "전체" ? decisions : decisions.filter((d) => d.status === filter);
+  const run = useCallback(async () => {
+    if (!canRun) return;
+    setRunning(true);
+    setResult(null);
+    try {
+      const data = await requestAgentDecision(lotId); // 🔴 실제 POST
+      setResult({
+        kind: "ok",
+        rootCauses: data.root_causes ?? [],
+        recommendations: data.recommendations ?? [],
+        confidence: typeof data.confidence === "number" ? data.confidence : null,
+      });
+    } catch (err) {
+      const status = errStatus(err);
+      const message = errText(err);
+      setResult(
+        isNotImplemented(status, message)
+          ? { kind: "pending", message }
+          : { kind: "error", message, status }
+      );
+    } finally {
+      setRunning(false);
+    }
+  }, [canRun, lotId]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>의사결정 지원</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          AI 추천 액션 목록 — 우선순위·근거·예상 효과 기반
-        </p>
-      </div>
+    <PageShell>
+      <PageHeader title="의사결정 지원" subtitle="불량 LOT 원인 분석 및 개선 방안 추천" />
 
-      {/* Summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-        {[
-          { label: "전체 추천",  value: decisions.length,                                 color: "#3A5BD9" },
-          { label: "대기",        value: decisions.filter(d => d.status === "대기").length,  color: "#B45309" },
-          { label: "채택",        value: decisions.filter(d => d.status === "채택").length, color: "#15803D" },
-          { label: "기각",        value: decisions.filter(d => d.status === "기각").length, color: "#9AA4B2" },
-        ].map((s) => (
-          <div key={s.label} className="card" style={{ padding: "14px 16px" }}>
-            <div style={{ fontSize: 11.5, fontWeight: 600, color: "#687182", letterSpacing: "0.03em", textTransform: "uppercase", marginBottom: 6 }}>{s.label}</div>
-            <div style={{ fontSize: 28, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums" }}>{s.value}</div>
-          </div>
-        ))}
-      </div>
+      <PendingBanner note="대상 LOT 목록은 실제 데이터입니다. 원인 분석 요청도 실제로 전송되지만, v1 에서는 분석 기능이 제공되지 않습니다." />
 
-      {/* Filter */}
-      <div style={{ display: "flex", gap: 8 }}>
-        {(["전체", "대기", "채택", "기각"] as const).map((f) => (
-          <button key={f} onClick={() => setFilter(f)} style={{ padding: "5px 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 20, border: "1px solid", cursor: "pointer", borderColor: filter === f ? "#3A5BD9" : "#E4E7EC", background: filter === f ? "#3A5BD9" : "#fff", color: filter === f ? "#fff" : "#687182" }}>{f}</button>
-        ))}
-      </div>
+      <FilterBar>
+        <Field label="대상 LOT (필수)" htmlFor="dec-lot" width={260}>
+          <select
+            id="dec-lot"
+            value={lotId}
+            disabled={lots.loading || lots.error !== null || lotOptions.length === 0}
+            onChange={(e) => setLotId(e.target.value)}
+            style={{
+              height: 34,
+              width: 260,
+              padding: "0 10px",
+              borderRadius: 8,
+              border: `1px solid ${T.border}`,
+              background: T.surface,
+              fontSize: 12.5,
+              color: T.text,
+              fontFamily: "inherit",
+            }}
+          >
+            <option value="">
+              {lots.loading
+                ? "불러오는 중…"
+                : lots.error
+                  ? "목록을 불러오지 못했습니다"
+                  : lotOptions.length === 0
+                    ? "불합격 LOT 이 없습니다"
+                    : "LOT 을 선택하세요"}
+            </option>
+            {lotOptions.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.value} ({dateOnly(o.date)})
+              </option>
+            ))}
+          </select>
+        </Field>
 
-      {/* Decision cards */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {filtered.map((d) => {
-          const pc = PRIORITY_COLORS[d.priority];
-          const cc = CAT_COLORS[d.category];
-          const isPending = d.status === "대기";
-          return (
-            <div key={d.id} className="card" style={{ opacity: d.status === "기각" ? 0.6 : 1, borderLeft: `4px solid ${pc.color}` }}>
-              <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
-                {/* Priority badge */}
-                <div style={{ width: 48, height: 48, borderRadius: 10, background: pc.bg, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <span style={{ fontSize: 18, fontWeight: 900, color: pc.color, lineHeight: 1 }}>P{d.priority}</span>
-                  <span style={{ fontSize: 9.5, fontWeight: 700, color: pc.color }}>{pc.label}</span>
-                </div>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!canRun}
+          onClick={() => void run()}
+          style={{ height: 34 }}
+        >
+          {running ? "분석 중…" : "원인 분석"}
+        </button>
+      </FilterBar>
 
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  {/* Header */}
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 8 }}>
-                    <div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                        <span style={{ fontSize: 14, fontWeight: 700, color: "#161B26" }}>{d.title}</span>
-                        <span style={{ padding: "1px 7px", borderRadius: 20, fontSize: 11, fontWeight: 600, ...cc }}>{d.category}</span>
-                        <StatusBadge variant={EFFORT_V[d.effort]} label={d.effort} />
-                      </div>
-                      <p style={{ margin: 0, fontSize: 12.5, color: "#687182", lineHeight: 1.5 }}>{d.summary}</p>
-                    </div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
-                      {d.status !== "대기" && (
-                        <StatusBadge variant={d.status === "채택" ? "green" : "gray"} label={d.status} dot />
-                      )}
-                      {isPending && (
-                        <>
-                          <button onClick={() => act(d.id, "채택")} style={{ padding: "6px 16px", fontSize: 12.5, fontWeight: 700, borderRadius: 7, border: "none", background: "#3A5BD9", color: "#fff", cursor: "pointer" }}>채택</button>
-                          <button onClick={() => act(d.id, "기각")} style={{ padding: "6px 16px", fontSize: 12.5, fontWeight: 700, borderRadius: 7, border: "1px solid #E4E7EC", background: "#fff", color: "#687182", cursor: "pointer" }}>기각</button>
-                        </>
-                      )}
-                    </div>
-                  </div>
+      {/* 목록이 실패하면 조용히 비우지 않는다 — 왜 드롭다운이 비었는지 밝힌다 */}
+      {lots.error && <InlineError message={lots.error} onRetry={lots.refetch} />}
 
-                  {/* Basis */}
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 10 }}>
-                    <div style={{ background: "#F8F9FB", borderRadius: 8, padding: "10px 12px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#687182", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>근거 데이터</div>
-                      {d.basis.map((b, i) => (
-                        <div key={i} style={{ display: "flex", gap: 6, fontSize: 12, color: "#161B26", lineHeight: 1.5, marginBottom: 2 }}>
-                          <span style={{ color: "#3A5BD9", flexShrink: 0 }}>•</span>
-                          {b}
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ background: "#F8F9FB", borderRadius: 8, padding: "10px 12px" }}>
-                      <div style={{ fontSize: 11, fontWeight: 700, color: "#687182", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.03em" }}>예상 효과</div>
-                      <p style={{ margin: 0, fontSize: 12, color: "#161B26", lineHeight: 1.5 }}>{d.expectedEffect}</p>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px solid #F2F4F7", display: "flex", justifyContent: "flex-end" }}>
-                <span style={{ fontSize: 11, color: "#9AA4B2" }}>AI 생성: {d.generatedAt}</span>
-              </div>
+      <Section title="분석 결과">
+        {running && (
+          <Center>서버에 요청하는 중입니다…</Center>
+        )}
+
+        {!running && result === null && (
+          <Center>
+            {lotId === "" ? "대상 LOT 을 선택하세요." : "원인 분석을 눌러주세요."}
+          </Center>
+        )}
+
+        {!running && result?.kind === "pending" && (
+          <PendingResult
+            detail="불량 원인 분석 기능은 v1 범위 밖입니다. 서버가 이 요청을 처리하지 않았습니다 (HTTP 501). 선택한 LOT 은 그대로 유지됩니다."
+            serverMessage={result.message}
+          />
+        )}
+
+        {!running && result?.kind === "error" && (
+          <div
+            style={{
+              padding: "12px 14px",
+              borderRadius: 10,
+              border: `1px solid ${T.error}`,
+              background: "#FEF3F2",
+              color: "#B42318",
+              fontSize: 12.5,
+              lineHeight: 1.6,
+            }}
+          >
+            <strong style={{ fontWeight: 600 }}>요청이 실패했습니다</strong>
+            <div style={{ marginTop: 4, wordBreak: "break-all" }}>
+              {result.status !== null ? `HTTP ${result.status} — ` : ""}
+              {result.message}
             </div>
-          );
-        })}
-      </div>
+          </div>
+        )}
+
+        {/* v1 에서는 도달하지 않는다. 서버가 응답을 주기 시작하면 그때 그린다 */}
+        {!running && result?.kind === "ok" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <ListCard title="추정 원인" items={result.rootCauses} />
+              <ListCard title="개선 방안" items={result.recommendations} />
+            </div>
+            {/*
+              `confidence` 범위(0~1 인지 0~100 인지)가 계약 미정의다.
+              0~1 로 가정해 백분율로 표시하되, 1 을 넘으면 그대로 숫자만 보여준다 (§4).
+              `null` 이면 영역 자체를 숨긴다 — 0 으로 채우지 않는다.
+            */}
+            {result.confidence !== null && (
+              <span style={{ fontSize: 12.5, color: T.textSub }}>
+                신뢰도{" "}
+                <strong style={{ color: T.text }}>
+                  {result.confidence <= 1
+                    ? `${(result.confidence * 100).toFixed(2)}%`
+                    : result.confidence.toFixed(2)}
+                </strong>
+              </span>
+            )}
+          </div>
+        )}
+      </Section>
+    </PageShell>
+  );
+}
+
+function Center({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        minHeight: 160,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        color: T.textMuted,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function ListCard({ title, items }: { title: string; items: string[] }) {
+  return (
+    <div
+      style={{
+        padding: "14px 16px",
+        borderRadius: 10,
+        border: `1px solid ${T.border}`,
+        background: T.surface,
+      }}
+    >
+      <strong style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{title}</strong>
+      {items.length === 0 ? (
+        <div style={{ marginTop: 8, fontSize: 12.5, color: T.textMuted }}>—</div>
+      ) : (
+        <ul style={{ margin: "8px 0 0", paddingLeft: 18, display: "flex", flexDirection: "column", gap: 6 }}>
+          {items.map((it, i) => (
+            <li key={i} style={{ fontSize: 12.5, lineHeight: 1.7, color: T.textSub }}>
+              {it}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

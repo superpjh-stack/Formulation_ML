@@ -1,6 +1,7 @@
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
 import { QualityScoreGauge } from "@/components/charts/QualityScoreGauge";
-import { Badge } from "@/components/ui/Badge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { LEGACY_BADGE_VARIANT } from "@/components/ui/badge-variants";
 import { getQualityBadgeVariant } from "@/lib/utils";
 import type { PredictResponse } from "@/types";
 
@@ -17,9 +18,7 @@ export function PredictResult({ result }: PredictResultProps) {
       <CardHeader>
         <div className="flex items-center justify-between">
           <CardTitle>예측 결과</CardTitle>
-          <Badge variant="neutral" className="font-mono text-xs">
-            {model_used}
-          </Badge>
+          <StatusBadge variant={LEGACY_BADGE_VARIANT.neutral} label={model_used} />
         </div>
       </CardHeader>
       <CardContent className="flex flex-col items-center gap-4">
@@ -29,15 +28,21 @@ export function PredictResult({ result }: PredictResultProps) {
           <p className="mt-1 text-4xl font-bold text-gray-900">
             {predicted_quality.toFixed(2)}
           </p>
-          <Badge variant={variant} className="mt-2">
-            {variant === "success"
-              ? "우수 — 양산 적합"
-              : variant === "info"
-              ? "양호 — 조건부 적합"
-              : variant === "warning"
-              ? "보통 — 추가 검토 필요"
-              : "주의 — 배합 재조정 권장"}
-          </Badge>
+          {/* `mt-2` 는 래퍼에 준다 — StatusBadge 는 inline-flex 라 마진 유틸이 안 먹는다 */}
+          <div className="mt-2">
+            <StatusBadge
+              variant={LEGACY_BADGE_VARIANT[variant]}
+              label={
+                variant === "success"
+                  ? "우수 — 양산 적합"
+                  : variant === "info"
+                  ? "양호 — 조건부 적합"
+                  : variant === "warning"
+                  ? "보통 — 추가 검토 필요"
+                  : "주의 — 배합 재조정 권장"
+              }
+            />
+          </div>
         </div>
       </CardContent>
     </Card>

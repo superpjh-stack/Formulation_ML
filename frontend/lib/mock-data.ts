@@ -1,5 +1,22 @@
-// ── 고려솔더 Mock 데이터 ─────────────────────────────────────────────────────
-// 실제 API 연동 전 개발/시연용 데이터
+/**
+ * 고려솔더 **뷰모델 정의 + DB 시드 원본**.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **런타임 데이터 경로에서 이 파일의 상수를 import 하지 마라.**
+ *    화면 데이터는 전부 `lib/koryo-api.ts` → `hooks/useKoryoData.ts` 로만 온다.
+ *    이 파일의 배열은 이제 `db-schema.md` §4.1 의 **DB 시드 원본**일 뿐이다.
+ *    API 응답으로 위장시키면 goal.md 3절 "조용한 실패"와 같은 죄다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ *
+ * 인터페이스 6종(camelCase)은 **뷰모델로 유지**한다 (`ts-types.md` §1.1 ③).
+ * 42화면이 이 형태를 쓰고 있어 snake_case 로 바꾸면 전부 깨진다.
+ * DTO(snake_case) ↔ 뷰모델(camelCase) 변환은 `lib/koryo-api.ts` 의 매퍼가 한다.
+ *
+ * ⚠ 이전 버전은 모듈 스코프에서 `Math.random()` 을 호출했다
+ * (`design-standards.md` §7 #1). 서버 컴포넌트가 import 하는 순간 서버/클라이언트가
+ * 다른 값을 만들어 **hydration mismatch** 가 난다. 아래 생성기는 고정 시드 LCG 라
+ * import 순서·실행 환경과 무관하게 항상 같은 배열을 만든다.
+ */
 
 export interface LotRecord {
   lotId: string;
@@ -37,8 +54,14 @@ export interface KpiData {
   month: string;
   yield: number;
   defectRate: number;
-  productionVolume: number;
-  qualityAvg: number;
+  /**
+   * ⚠ **`null` 을 그대로 화면까지 보낸다.** 투입/산출량 저장 컬럼이 없어
+   * 서버가 `null` 을 줄 수 있고 (`api-contract.md` §8.11), 0 으로 채우면
+   * "생산 0" 으로 오독된다 (`ts-types.md` §3.1). 화면은 위젯을 숨겨라.
+   */
+  productionVolume: number | null;
+  /** `/kpi/quality` 에 해당 월이 없으면 null. 0 으로 채우지 마라 */
+  qualityAvg: number | null;
 }
 
 export interface QualityResult {
@@ -71,19 +94,35 @@ export const LOT_LIST: LotRecord[] = [
   { lotId: 'LOT-2026-010', date: '2026-06-18', supplier: 'SUP_A', snRatio: 62.4, agRatio: 2.95, cuRatio: 0.51, pbRatio: 34.14, qualityScore: 83.9, status: 'pass' },
 ];
 
-// ── 성분 이력 (30일) ──────────────────────────────────────────────────────────
-function generateComponentHistory(days: number): ComponentData[] {
+// ── 성분 이력 시드 (90일) ─────────────────────────────────────────────────────
+//
+// 🔴 `Math.random()` 을 다시 쓰지 마라. 모듈 스코프 난수는 서버/클라이언트가 다른 값을
+//    만들어 hydration mismatch 를 낸다 (design-standards.md §7 #1).
+//    아래 LCG 는 고정 시드라 항상 같은 배열을 만든다.
+
+/** 결정적 난수 — 시드 42 (백엔드 학습 스크립트와 같은 시드) */
+function seededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    // Numerical Recipes LCG
+    state = (Math.imul(state, 1664525) + 1013904223) >>> 0;
+    return state / 4294967296;
+  };
+}
+
+export function generateComponentHistory(days: number, seed = 42): ComponentData[] {
   const SN_TARGET = 62.0;
   const AG_TARGET = 3.0;
   const CU_TARGET = 0.5;
+  const rand = seededRandom(seed);
   const result: ComponentData[] = [];
-  const now = new Date('2026-06-27');
+  const now = new Date('2026-06-27T00:00:00Z');
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(now);
-    d.setDate(d.getDate() - i);
-    const sn = +(SN_TARGET + (Math.random() - 0.5) * 4).toFixed(2);
-    const ag = +(AG_TARGET + (Math.random() - 0.5) * 0.6).toFixed(3);
-    const cu = +(CU_TARGET + (Math.random() - 0.5) * 0.2).toFixed(3);
+    d.setUTCDate(d.getUTCDate() - i);
+    const sn = +(SN_TARGET + (rand() - 0.5) * 4).toFixed(2);
+    const ag = +(AG_TARGET + (rand() - 0.5) * 0.6).toFixed(3);
+    const cu = +(CU_TARGET + (rand() - 0.5) * 0.2).toFixed(3);
     const pb = +(100 - sn - ag - cu).toFixed(2);
     result.push({
       date: d.toISOString().slice(0, 10),
@@ -95,6 +134,7 @@ function generateComponentHistory(days: number): ComponentData[] {
   }
   return result;
 }
+/** DB 시드 원본. 화면에서 쓰지 마라 — `koryo-api.getComponentHistory()` 를 써라 */
 export const COMPONENT_HISTORY: ComponentData[] = generateComponentHistory(90);
 
 // ── 설비 상태 ──────────────────────────────────────────────────────────────────

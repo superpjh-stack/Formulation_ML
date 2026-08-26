@@ -1,95 +1,120 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { DataTable, Column } from "@/components/ui/DataTable";
+/**
+ * FE-RT-04 — 설비 현황 대시보드 · `/dashboard/equipment` · FR-D-03
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-04. **SF-TD3 에 와이어프레임이 없어서**
+ * 구성은 FR-D-03 본문 + `EquipmentDto` 필드 + 응답 `summary` 4값에서 도출했다.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - 🚨 **가짜 실시간 제거.** 이전 구현은 `setInterval` 로 `Math.random()` 을 3초마다 더해
+ *     "실시간"을 흉내냈다 — 가짜 데이터를 실시간으로 위장하는 것이라 goal.md 3절 위반이다.
+ *     → `GET /dashboard/equipment` **10초 폴링**으로 교체 (api-contract §8.6. WebSocket 금지)
+ *   - 하드코딩 mock 삭제 (`EQUIPMENT` 8줄 · `ALARMS` 12줄 · `ALARM_COLUMNS` 17줄)
+ *   - 🚨 **온도 경고 판정을 프론트에서 하지 않는다.** 이전 구현은 설비별 `normalMin~normalMax`
+ *     (예 `1150~1200°C`)로 판정했는데 계약값 `255°C` 와 **두 자릿수 차이**였다 (부록 C).
+ *     → 서버 `temp_warning` 그대로 사용. **이 파일에 `255` 리터럴이 없다**
+ *   - 요약 카운트: 프론트 `filter().length` 3구분 → **서버 `summary` 4구분**
+ *   - RPM·설비 유형 아이콘·경보 이력 표 제거 (DB 컬럼·엔드포인트 없음 — `TODO-G1-002`)
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useDashboardEquipment, usePublicSettings } from "@/hooks/useKoryoData";
+import {
+  EQUIPMENT_TEMP_WARN_C,
+  type DashboardEquipmentDto,
+  type EquipmentDto,
+  type EquipmentState,
+} from "@/types/api";
 import { StatusBadge } from "@/components/ui/StatusBadge";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
+import { T } from "@/components/ui/tokens";
+import {
+  CenterBox,
+  DASH,
+  PageHeader,
+  PageShell,
+  ScreenError,
+  SettingsFallbackBanner,
+  classifyHookError,
+  dateOnly,
+  int,
+  num,
+} from "../../_g1/ui";
 
-// ── Types & Mock Data ────────────────────────────────────────────────────────
+/** api-contract §8.6 이 FE-RT-22 에 규정한 값. 같은 데이터원이므로 동일 적용 */
+const POLL_MS = 10_000;
 
-interface Equipment {
-  id: string;
-  name: string;
-  type: string;
-  valueLabel: string;
-  value: number;
-  unit: string;
-  normalMin: number;
-  normalMax: number;
-  status: "정상" | "주의" | "점검중" | "이상";
-  lastCheck: string;
-  runtime: string;
-}
+/** 연속 실패 이 횟수에 도달하면 폴링을 멈추고 사용자에게 알린다 (plan-g1 §9) */
+const FAILURE_LIMIT = 3;
 
-const EQUIPMENT: Equipment[] = [
-  { id: "FUR-A", name: "용광로 A", type: "furnace", valueLabel: "온도", value: 1180, unit: "°C", normalMin: 1150, normalMax: 1200, status: "정상",   lastCheck: "2026-06-28 06:00", runtime: "18h 32m" },
-  { id: "FUR-B", name: "용광로 B", type: "furnace", valueLabel: "온도", value: 1175, unit: "°C", normalMin: 1150, normalMax: 1200, status: "정상",   lastCheck: "2026-06-28 06:00", runtime: "16h 15m" },
-  { id: "AGT-A", name: "교반기 A", type: "agitator", valueLabel: "RPM", value: 45,   unit: "rpm", normalMin: 30,   normalMax: 60,   status: "정상",   lastCheck: "2026-06-27 18:00", runtime: "22h 10m" },
-  { id: "AGT-B", name: "교반기 B", type: "agitator", valueLabel: "RPM", value: 0,    unit: "rpm", normalMin: 30,   normalMax: 60,   status: "점검중", lastCheck: "2026-06-28 08:30", runtime: "—" },
-  { id: "CL-A",  name: "냉각라인 A", type: "cooling", valueLabel: "온도", value: 25,  unit: "°C", normalMin: 15,   normalMax: 30,   status: "정상",   lastCheck: "2026-06-28 07:00", runtime: "14h 05m" },
-  { id: "CL-B",  name: "냉각라인 B", type: "cooling", valueLabel: "온도", value: 31,  unit: "°C", normalMin: 15,   normalMax: 30,   status: "주의",   lastCheck: "2026-06-28 07:00", runtime: "14h 05m" },
+/** 응답에 `temp_warn_c` 가 실려 오는데 계약 타입에는 없다. 읽기만 확장한다 */
+type EquipmentResponse = DashboardEquipmentDto & { temp_warn_c?: number };
+
+const STATE_BADGE: Record<EquipmentState, { variant: "green" | "amber" | "red" | "gray"; label: string }> = {
+  normal: { variant: "green", label: "정상" },
+  warning: { variant: "amber", label: "경고" },
+  error: { variant: "red", label: "이상" },
+  maintenance: { variant: "gray", label: "점검중" },
+};
+
+const SUMMARY_ITEMS: { key: keyof DashboardEquipmentDto["summary"]; label: string; color: string }[] = [
+  { key: "normal", label: "정상", color: "#22C55E" },
+  { key: "warning", label: "경고", color: "#F59E0B" },
+  { key: "error", label: "이상", color: "#EF4444" },
+  { key: "maintenance", label: "점검중", color: "#687182" },
 ];
 
-interface AlarmRow {
-  time: string;
-  equipment: string;
-  level: "경고" | "정보" | "긴급";
-  message: string;
-  resolved: boolean;
-}
+// ── 온도 게이지 ───────────────────────────────────────────────────────────────
 
-const ALARMS: AlarmRow[] = [
-  { time: "08:47", equipment: "냉각라인 B", level: "경고", message: "냉각수 온도 정상 범위 초과 (31°C > 30°C)", resolved: false },
-  { time: "08:30", equipment: "교반기 B",   level: "정보", message: "정기 점검 시작 — 예상 완료 10:30", resolved: false },
-  { time: "07:12", equipment: "용광로 A",   level: "정보", message: "가열 사이클 정상 완료", resolved: true },
-  { time: "06:55", equipment: "교반기 A",   level: "경고", message: "진동 수치 일시 상승 (1.8g) — 자동 복구", resolved: true },
-  { time: "05:30", equipment: "냉각라인 A", level: "정보", message: "냉각수 보충 완료", resolved: true },
-  { time: "04:10", equipment: "용광로 B",   level: "경고", message: "온도 변동 ±15°C 초과 — 안정화 완료", resolved: true },
-  { time: "02:38", equipment: "용광로 A",   level: "정보", message: "야간 가동 모드 전환", resolved: true },
-  { time: "01:15", equipment: "교반기 A",   level: "정보", message: "윤활유 자동 공급", resolved: true },
-  { time: "00:02", equipment: "냉각라인 B", level: "경고", message: "냉각수 유량 저하 감지 — 복구됨", resolved: true },
-  { time: "전일 23:45", equipment: "용광로 B", level: "정보", message: "배치 교체 완료", resolved: true },
-];
+/**
+ * 경고 임계값 기준 게이지. 임계값은 **응답 `temp_warn_c` → `/settings/public`** 순으로
+ * 받는다. 정상범위 min/max 컬럼은 DB 에 없으므로 단일 임계값만 쓴다.
+ */
+function TempGauge({ temperature, warnAt, warning }: { temperature: number; warnAt: number; warning: boolean }) {
+  // 임계값을 눈금의 80% 지점에 두어 초과분이 보이게 한다
+  const full = warnAt / 0.8;
+  const ratio = Math.max(0, Math.min(1, temperature / full));
+  const markAt = Math.max(0, Math.min(1, warnAt / full));
 
-// ── Gauge Bar ────────────────────────────────────────────────────────────────
-
-function GaugeBar({ value, min, max, status }: { value: number; min: number; max: number; status: string }) {
-  const pct = Math.max(0, Math.min(100, ((value - min) / (max - min)) * 100));
-  const color = status === "정상" ? "#3A5BD9" : status === "주의" ? "#D97706" : status === "점검중" ? "#9AA4B2" : "#DC2626";
   return (
-    <div style={{ width: "100%", height: 5, background: "#F2F4F7", borderRadius: 4, overflow: "hidden", marginTop: 6 }}>
-      <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 4, transition: "width 0.6s ease" }} />
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ position: "relative", height: 6, borderRadius: 3, background: T.border }}>
+        <div
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: `${ratio * 100}%`,
+            borderRadius: 3,
+            background: warning ? T.error : T.primary,
+          }}
+        />
+        {/* 경고 임계 눈금 */}
+        <div
+          style={{
+            position: "absolute",
+            left: `${markAt * 100}%`,
+            top: -3,
+            bottom: -3,
+            width: 2,
+            background: T.textSub,
+            borderRadius: 1,
+          }}
+        />
+      </div>
+      <span style={{ fontSize: 10, color: T.textMuted }}>경고 임계 {warnAt}°C</span>
     </div>
   );
 }
 
-// ── Equipment Card ───────────────────────────────────────────────────────────
+// ── 설비 카드 ─────────────────────────────────────────────────────────────────
 
-const STATUS_VARIANT: Record<string, "green" | "amber" | "red" | "gray"> = {
-  "정상": "green", "주의": "amber", "점검중": "amber", "이상": "red",
-};
-
-const EQUIP_ICON: Record<string, string> = {
-  furnace: "🔥",
-  agitator: "⚙️",
-  cooling: "❄️",
-};
-
-function EquipCard({ eq }: { eq: Equipment }) {
-  const [tick, setTick] = useState(0);
-
-  // 정상 설비만 값 미세 변동 시뮬레이션
-  useEffect(() => {
-    if (eq.status !== "정상") return;
-    const id = setInterval(() => setTick((t) => t + 1), 3000);
-    return () => clearInterval(id);
-  }, [eq.status]);
-
-  const liveValue = eq.status === "정상"
-    ? eq.value + (tick % 2 === 0 ? 0 : Math.round((Math.random() - 0.5) * 2))
-    : eq.value;
-
-  const isAlert = eq.status === "주의" || eq.status === "이상";
-  const isMaint = eq.status === "점검중";
+function EquipmentCard({ eq, warnAt, stale }: { eq: EquipmentDto; warnAt: number; stale: boolean }) {
+  const badge = STATE_BADGE[eq.status] ?? { variant: "gray" as const, label: eq.status };
+  // 🔴 서버 판정값이다. 프론트에서 온도를 임계값과 다시 비교하지 않는다
+  const warning = eq.temp_warning;
 
   return (
     <div
@@ -98,160 +123,261 @@ function EquipCard({ eq }: { eq: Equipment }) {
         display: "flex",
         flexDirection: "column",
         gap: 12,
-        border: isAlert
-          ? "1px solid #FDE68A"
-          : isMaint
-          ? "1px solid #E4E7EC"
-          : "1px solid #E4E7EC",
-        background: isAlert ? "#FFFBEB" : "#fff",
-        position: "relative",
-        overflow: "hidden",
+        // 온도 경고 설비는 상단 Warning 스트라이프로 구분한다
+        borderTop: warning ? `3px solid ${T.warning}` : `3px solid transparent`,
+        opacity: stale ? 0.55 : 1,
       }}
     >
-      {/* Alert stripe */}
-      {isAlert && (
-        <div style={{ position: "absolute", top: 0, left: 0, width: "100%", height: 3, background: "#F59E0B" }} />
-      )}
-
-      {/* Header row */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 20 }}>{EQUIP_ICON[eq.type]}</span>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>{eq.name}</div>
-            <div style={{ fontSize: 11, color: "#9AA4B2", marginTop: 1 }}>{eq.id}</div>
-          </div>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+          <span style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{eq.name}</span>
+          <span style={{ fontSize: 11.5, color: T.textMuted, fontVariantNumeric: "tabular-nums" }}>
+            {eq.eq_id}
+          </span>
         </div>
-        <StatusBadge variant={STATUS_VARIANT[eq.status] ?? "gray"} label={eq.status} dot />
+        <StatusBadge variant={badge.variant} label={badge.label} dot />
       </div>
 
-      {/* Value */}
-      <div>
-        <div style={{ fontSize: 11, fontWeight: 600, color: "#687182", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>
-          현재 {eq.valueLabel}
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: T.textSub }}>현재 온도</span>
+          {warning && <StatusBadge variant="amber" label="온도 경고" />}
         </div>
         <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-          <span style={{ fontSize: 28, fontWeight: 800, color: isAlert ? "#B45309" : "#161B26", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
-            {eq.status === "점검중" ? "—" : liveValue.toLocaleString()}
+          <span
+            style={{
+              fontSize: 24,
+              fontWeight: 800,
+              color: warning ? T.error : T.text,
+              lineHeight: 1,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {num(eq.temperature, 1)}
           </span>
-          <span style={{ fontSize: 13, color: "#9AA4B2", fontWeight: 500 }}>{eq.unit}</span>
-        </div>
-        <GaugeBar value={liveValue} min={eq.normalMin} max={eq.normalMax} status={eq.status} />
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: "#9AA4B2", marginTop: 4 }}>
-          <span>정상: {eq.normalMin}–{eq.normalMax} {eq.unit}</span>
-          {eq.status === "정상" && (
-            <span style={{ color: "#15803D", fontWeight: 600 }}>정상 범위</span>
-          )}
-          {eq.status === "주의" && (
-            <span style={{ color: "#B45309", fontWeight: 600 }}>범위 초과</span>
+          {eq.temperature !== null && (
+            <span style={{ fontSize: 12, color: T.textMuted }}>°C</span>
           )}
         </div>
+        {/* `null` 이면 게이지를 그리지 않는다. `0` 은 유효한 온도이므로 그린다 */}
+        {eq.temperature !== null && (
+          <TempGauge temperature={eq.temperature} warnAt={warnAt} warning={warning} />
+        )}
       </div>
 
-      {/* Meta */}
-      <div style={{ borderTop: "1px solid #F2F4F7", paddingTop: 10, display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "#9AA4B2" }}>
-        <span>가동시간 <strong style={{ color: "#687182" }}>{eq.runtime}</strong></span>
-        <span>점검 {eq.lastCheck.split(" ")[1]}</span>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          gap: 8,
+          paddingTop: 10,
+          borderTop: `1px solid ${T.border}`,
+          fontSize: 11.5,
+          color: T.textSub,
+        }}
+      >
+        <span>
+          가동시간 <strong style={{ color: T.text }}>{num(eq.uptime, 1)}</strong>
+          {eq.uptime !== null ? "h" : ""}
+        </span>
+        <span>
+          점검 <strong style={{ color: T.text }}>{eq.last_maintenance ? dateOnly(eq.last_maintenance) : DASH}</strong>
+        </span>
       </div>
+      <span style={{ fontSize: 10.5, color: T.textMuted }}>
+        갱신 {eq.updated_at.replace("T", " ").slice(0, 19)}
+      </span>
     </div>
   );
 }
 
-// ── Alarm Table ──────────────────────────────────────────────────────────────
+// ── 페이지 ────────────────────────────────────────────────────────────────────
 
-const LEVEL_VARIANT: Record<string, "red" | "amber" | "blue"> = {
-  "긴급": "red", "경고": "amber", "정보": "blue",
-};
+export default function EquipmentDashboardPage() {
+  const { data, loading, error, refetch } = useDashboardEquipment();
+  const settings = usePublicSettings();
 
-const ALARM_COLUMNS: Column<AlarmRow>[] = [
-  { key: "time",      header: "시각",   width: 100 },
-  { key: "equipment", header: "설비",   width: 130 },
-  {
-    key: "level", header: "등급", width: 70, align: "center",
-    render: (_, row) => <StatusBadge variant={LEVEL_VARIANT[row.level]} label={row.level} />,
-  },
-  { key: "message",   header: "내용",   render: (v, row) => (
-    <span style={{ color: row.resolved ? "#9AA4B2" : "#161B26" }}>{v as string}</span>
-  )},
-  {
-    key: "resolved", header: "처리", width: 70, align: "center",
-    render: (v) => v
-      ? <span style={{ fontSize: 11.5, color: "#15803D", fontWeight: 600 }}>완료</span>
-      : <span style={{ fontSize: 11.5, color: "#B45309", fontWeight: 600 }}>미처리</span>,
-  },
-];
+  /** 연속 실패 횟수. 1~2회는 조용히 재시도하고 3회에서 폴링을 멈춘다 */
+  const [failures, setFailures] = useState(0);
+  const [lastSuccessAt, setLastSuccessAt] = useState<string | null>(null);
+  const wasLoading = useRef(loading);
 
-// ── Page ─────────────────────────────────────────────────────────────────────
+  // 요청 1건이 끝날 때마다 성공/실패를 센다 (`loading` 의 true→false 전이가 완료 신호다)
+  useEffect(() => {
+    if (wasLoading.current && !loading) {
+      if (error) {
+        setFailures((f) => f + 1);
+      } else {
+        setFailures(0);
+        setLastSuccessAt(new Date().toLocaleTimeString("ko-KR", { hour12: false }));
+      }
+    }
+    wasLoading.current = loading;
+  }, [loading, error]);
 
-export default function EquipmentPage() {
-  const normalCount = EQUIPMENT.filter((e) => e.status === "정상").length;
-  const warnCount   = EQUIPMENT.filter((e) => e.status === "주의" || e.status === "이상").length;
-  const maintCount  = EQUIPMENT.filter((e) => e.status === "점검중").length;
+  const pollingStopped = failures >= FAILURE_LIMIT;
+
+  // 10초 폴링. 언마운트 시 `clearInterval`, 탭이 백그라운드면 건너뛴다
+  useEffect(() => {
+    if (pollingStopped) return;
+    const id = setInterval(() => {
+      if (typeof document === "undefined" || document.visibilityState === "visible") {
+        refetch();
+      }
+    }, POLL_MS);
+    return () => clearInterval(id);
+  }, [pollingStopped, refetch]);
+
+  // 탭으로 돌아오면 즉시 한 번 갱신한다 (백그라운드 동안 건너뛴 틱 보상)
+  useEffect(() => {
+    if (pollingStopped || typeof document === "undefined") return;
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refetch();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [pollingStopped, refetch]);
+
+  const reconnect = useCallback(() => {
+    setFailures(0);
+    refetch();
+  }, [refetch]);
+
+  // 임계값: 응답이 주면 응답, 없으면 `/settings/public`, 그것도 없으면 계약 상수.
+  // 어느 경로든 **판정은 서버 `temp_warning`** 이고 이 값은 게이지 눈금에만 쓴다.
+  const warnAt =
+    (data as EquipmentResponse | null)?.temp_warn_c ??
+    settings.data?.settings.temp_warn_c ??
+    EQUIPMENT_TEMP_WARN_C;
+
+  // 첫 로드 실패 — 보여줄 값이 아예 없다
+  if (!data && error) return <ScreenError message={error} onRetry={reconnect} />;
+
+  const polling = !pollingStopped && !!data;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+    <PageShell>
+      <PageHeader
+        title="설비 현황 대시보드"
+        subtitle="솔더링 머신·용해로·배합기 등 설비별 상태 실시간 표시 (FR-D-03 · 10초 폴링)"
+        actions={
+          <>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                fontSize: 12,
+                color: polling ? "#15803D" : T.textMuted,
+              }}
+            >
+              <span
+                aria-hidden="true"
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: "50%",
+                  background: polling ? "#22C55E" : "#9AA4B2",
+                  animation: polling ? "koryo-pulse 1.6s ease-in-out infinite" : undefined,
+                }}
+              />
+              {pollingStopped ? "폴링 중단됨" : "실시간"}
+              {lastSuccessAt && (
+                <span style={{ color: T.textMuted }}>· 마지막 갱신 {lastSuccessAt}</span>
+              )}
+            </span>
+            <button type="button" className="btn" onClick={reconnect}>
+              새로고침
+            </button>
+          </>
+        }
+      />
 
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>설비 상태 모니터링</h1>
-          <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>실시간 설비 현황 및 경보 이력</p>
-        </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button className="btn">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z"/><path d="M12 7v5l3 3"/></svg>
-            새로고침
+      <SettingsFallbackBanner settings={settings.data} />
+
+      {/* 연속 3회 실패 — 폴링을 멈추고 실패를 드러낸다. 값은 stale 로 표시한다 */}
+      {pollingStopped && error && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          <ErrorAlert
+            message={`${classifyHookError(error).title} — ${error} (연속 ${failures}회 실패, 자동 갱신을 중단했습니다)`}
+          />
+          <button type="button" className="btn pri" style={{ alignSelf: "flex-start" }} onClick={reconnect}>
+            재연결
           </button>
         </div>
-      </div>
+      )}
 
-      {/* Summary strip */}
-      <div style={{ display: "flex", gap: 12 }}>
-        {[
-          { label: "정상 가동", count: normalCount, color: "#15803D", bg: "#ECFDF3" },
-          { label: "주의 필요", count: warnCount,   color: "#B45309", bg: "#FEF6E7" },
-          { label: "점검 중",   count: maintCount,  color: "#687182", bg: "#F2F4F7" },
-        ].map((s) => (
-          <div key={s.label} style={{
-            display: "flex", alignItems: "center", gap: 8,
-            padding: "8px 16px", borderRadius: 8, background: s.bg,
-            fontSize: 13, fontWeight: 600, color: s.color,
-          }}>
-            <span style={{ fontSize: 20, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>{s.count}</span>
-            <span style={{ fontSize: 12.5 }}>{s.label}</span>
+      {/* 폴링 1~2회 실패는 조용히 재시도하되 사실은 남긴다 */}
+      {!pollingStopped && error && data && (
+        <span style={{ fontSize: 11.5, color: T.warning }}>
+          갱신 실패 {failures}회 — 표시된 값은 {lastSuccessAt ?? "이전"} 기준입니다. 재시도 중…
+        </span>
+      )}
+
+      {!data ? (
+        <CenterBox minHeight={420}>
+          <span style={{ fontSize: 13, color: T.textMuted }}>불러오는 중…</span>
+        </CenterBox>
+      ) : (
+        <>
+          {/* ── 요약 스트립 — **서버 `summary`** 4값 ────────────────────── */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+            {SUMMARY_ITEMS.map((item) => (
+              <div
+                key={item.key}
+                className="card"
+                style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: `3px solid ${item.color}` }}
+              >
+                <span
+                  style={{
+                    fontSize: 11.5,
+                    fontWeight: 600,
+                    color: T.textSub,
+                    letterSpacing: "0.03em",
+                    textTransform: "uppercase",
+                  }}
+                >
+                  {item.label}
+                </span>
+                <div style={{ display: "flex", alignItems: "flex-end", gap: 4 }}>
+                  <span
+                    style={{
+                      fontSize: 26,
+                      fontWeight: 800,
+                      color: item.color,
+                      lineHeight: 1,
+                      fontVariantNumeric: "tabular-nums",
+                    }}
+                  >
+                    {int(data.summary[item.key])}
+                  </span>
+                  <span style={{ fontSize: 13, color: T.textMuted, marginBottom: 2 }}>대</span>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#9AA4B2" }}>
-          <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#16A34A", display: "inline-block", animation: "pulse-dot 2s ease-in-out infinite" }} />
-          실시간 모니터링 중
-        </div>
-      </div>
 
-      {/* Equipment Grid — 3 columns */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        {EQUIPMENT.map((eq) => <EquipCard key={eq.id} eq={eq} />)}
-      </div>
-
-      {/* Alarm Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "12px 20px", borderBottom: "1px solid #E4E7EC", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>경보 이력</span>
-          <span style={{ fontSize: 12, color: "#9AA4B2" }}>최근 10건</span>
-        </div>
-        <DataTable
-          columns={ALARM_COLUMNS}
-          data={ALARMS}
-          rowKey={(_, i) => i}
-          stickyHeader
-        />
-      </div>
+          {/* ── 설비 카드 그리드 (3열) ──────────────────────────────────── */}
+          {data.items.length === 0 ? (
+            <CenterBox minHeight={240}>
+              <span style={{ fontSize: 13, color: T.textMuted }}>등록된 설비가 없습니다</span>
+            </CenterBox>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 20 }}>
+              {data.items.map((eq) => (
+                <EquipmentCard key={eq.eq_id} eq={eq} warnAt={warnAt} stale={pollingStopped} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
 
       <style>{`
-        @keyframes pulse-dot {
+        @keyframes koryo-pulse {
           0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
+          50%      { opacity: 0.35; }
         }
       `}</style>
-    </div>
+    </PageShell>
   );
 }

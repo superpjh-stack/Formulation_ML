@@ -1,7 +1,8 @@
 "use client";
 
 import { getQualityColor, getQualityBadgeVariant } from "@/lib/utils";
-import { Badge } from "@/components/ui/Badge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { LEGACY_BADGE_VARIANT } from "@/components/ui/badge-variants";
 import { QUALITY_THRESHOLDS } from "@/lib/constants";
 
 interface QualityScoreGaugeProps {
@@ -67,7 +68,7 @@ export function QualityScoreGauge({
         </div>
       </div>
 
-      <Badge variant={variant}>{LABELS[variant]}</Badge>
+      <StatusBadge variant={LEGACY_BADGE_VARIANT[variant]} label={LABELS[variant]} />
 
       {/* 임계값 범례 */}
       <div className="grid grid-cols-3 gap-2 text-center text-xs text-gray-500">

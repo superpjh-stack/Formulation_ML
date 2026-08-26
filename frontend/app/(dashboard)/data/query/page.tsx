@@ -1,350 +1,421 @@
 "use client";
 
-import { useState } from "react";
-import { DataTable, Column } from "@/components/ui/DataTable";
+/**
+ * FE-RT-34 — 데이터 조회 · `/data/query` · FR-DT-02 (필수)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-34. 와이어프레임 없음(SF-TD3 §3).
+ * 저장 테이블: `lots`/`components`/`quality`. **CR-DB-001 무관, 501 아님.**
+ * *"이 화면은 16화면 중 계약이 가장 온전한 축이다"* — **계약 누락 0건.**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **1순위 수용 기준: 날짜 범위가 실제로 서버 쿼리에 반영된다.**
+ *
+ * 개편 전 결함: `startDate`/`endDate` state 가 존재하는데 `handleQuery()` 안에서
+ * **전혀 사용되지 않았다** (`page.tsx:184-201` 은 `supplier`·`lotNo` 만 필터).
+ * 사용자가 기간을 바꿔도 결과가 그대로였다 — 조용한 실패다.
+ * 지금은 `date_from`/`date_to` 를 **쿼리 파라미터로 전송**한다.
+ *
+ * 그 밖에 고친 것:
+ *   - 데이터 유형 5종(성분분석/입고이력/품질검사/공정실적/출하이력)
+ *     → 계약 화이트리스트 **3종**(`lots`/`components`/`quality`).
+ *     입고·출하·공정은 각자의 화면(FE-RT-06/07·16·21)이 담당한다
+ *   - 열 정의 하드코딩(`COLUMNS_MAP`) → **응답 `columns` 로 동적 생성**
+ *     (api-contract §8.9: *"`columns` 를 같이 내려주면 테이블 헤더를 하드코딩하지
+ *     않아도 된다"*)
+ *   - mock 25행 5배열 삭제 → `GET /data/query` 실 연동
+ *   - 공급사 **자유 텍스트 입력** → `GET /suppliers?active=true` 기반 드롭다운.
+ *     mock 에 있던 `SUP_D` 는 존재하지 않는 공급사다 (`BUG-002` 재발 패턴)
+ *   - 페이지네이션 신설 (전건을 한 번에 렌더링하던 것)
+ *   - CSV/Excel 버튼에 `onClick` 이 없던 것 → `exportData()` 연결.
+ *     **`<a href>`·`window.location` 을 쓰지 않는다 — 인증 헤더가 안 붙는다**
+ *   - `toFixed(2)` 일괄 → DB 정의 기반 자릿수 (성분 3자리 등, §4)
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-// ─── Types & Mock Data ────────────────────────────────────────────────────────
+import { useCallback, useMemo, useState } from "react";
+import { exportData, getDataQuery, getSuppliers } from "@/lib/koryo-api";
+import type { DataColumn, ExportFormat, QueryEntity } from "@/types/api";
+import { T } from "@/components/ui/tokens";
+import {
+  DateInput,
+  Field,
+  FilterBar,
+  InlineError,
+  PAGE_SIZE_OPTIONS,
+  PageHeader,
+  PageShell,
+  Pagination,
+  Section,
+  Select,
+  TextInput,
+} from "../../_g1/ui";
+import { Chips, Notice, cell, errText, useApi } from "../../_g3/ui";
 
-type DataType = "성분분석" | "입고이력" | "품질검사" | "공정실적" | "출하이력";
-
-// ── 성분분석 ──
-interface ComponentRow {
-  id: string; date: string; lot: string; supplier: string; sn: number; ag: number; cu: number; pb: number; result: string;
-}
-const COMPONENT_DATA: ComponentRow[] = [
-  { id: "CA-001", date: "2026-06-27", lot: "LOT-A-260001", supplier: "SUP_A", sn: 62.1, ag: 2.98, cu: 0.51, pb: 34.41, result: "합격" },
-  { id: "CA-002", date: "2026-06-27", lot: "LOT-B-260001", supplier: "SUP_B", sn: 61.8, ag: 3.02, cu: 0.49, pb: 34.69, result: "합격" },
-  { id: "CA-003", date: "2026-06-26", lot: "LOT-C-260001", supplier: "SUP_C", sn: 61.5, ag: 2.85, cu: 0.47, pb: 35.18, result: "보류" },
-  { id: "CA-004", date: "2026-06-26", lot: "LOT-D-260001", supplier: "SUP_D", sn: 59.8, ag: 2.72, cu: 0.44, pb: 37.04, result: "불합격" },
-  { id: "CA-005", date: "2026-06-25", lot: "LOT-A-260003", supplier: "SUP_A", sn: 62.2, ag: 2.99, cu: 0.51, pb: 34.30, result: "합격" },
+/** api-contract §8.9 화이트리스트 — **임의 테이블명·SQL 조각 전송 금지** (NFR-S-05) */
+const ENTITIES: { value: QueryEntity; label: string }[] = [
+  { value: "lots", label: "LOT" },
+  { value: "components", label: "성분" },
+  { value: "quality", label: "품질" },
 ];
 
-// ── 입고이력 ──
-interface PurchaseRow {
-  id: string; date: string; lot: string; material: string; supplier: string; qty: number; unitPrice: number; total: number;
-}
-const PURCHASE_DATA: PurchaseRow[] = [
-  { id: "RC-001", date: "2026-06-27", lot: "LOT-A-260001", material: "SN", supplier: "SUP_A", qty: 500, unitPrice: 28500, total: 14250000 },
-  { id: "RC-002", date: "2026-06-27", lot: "LOT-B-260001", material: "AG", supplier: "SUP_B", qty: 30,  unitPrice: 980000, total: 29400000 },
-  { id: "RC-003", date: "2026-06-26", lot: "LOT-A-260002", material: "PB", supplier: "SUP_A", qty: 200, unitPrice: 3200,   total: 640000 },
-  { id: "RC-004", date: "2026-06-26", lot: "LOT-C-260001", material: "CU", supplier: "SUP_C", qty: 50,  unitPrice: 12400,  total: 620000 },
-  { id: "RC-005", date: "2026-06-25", lot: "LOT-B-260002", material: "SN", supplier: "SUP_B", qty: 600, unitPrice: 28500,  total: 17100000 },
-];
-
-// ── 품질검사 ──
-interface QualityRow {
-  id: string; date: string; lot: string; product: string; score: number; inspector: string; result: string; defect: string;
-}
-const QUALITY_DATA: QualityRow[] = [
-  { id: "QI-001", date: "2026-06-27", lot: "LOT-2026-0627-001", product: "Sn63Pb37", score: 88.4, inspector: "김민준", result: "합격", defect: "-" },
-  { id: "QI-002", date: "2026-06-27", lot: "LOT-2026-0627-003", product: "Sn60Pb40", score: 82.1, inspector: "이서연", result: "불합격", defect: "CU 편차" },
-  { id: "QI-003", date: "2026-06-26", lot: "LOT-2026-0626-002", product: "Sn63Pb37", score: 86.9, inspector: "박지훈", result: "합격", defect: "-" },
-  { id: "QI-004", date: "2026-06-26", lot: "LOT-2026-0626-005", product: "Sn60Pb40", score: 83.4, inspector: "김민준", result: "불합격", defect: "SN 편차" },
-  { id: "QI-005", date: "2026-06-25", lot: "LOT-2026-0625-001", product: "Sn63Pb37", score: 89.1, inspector: "이서연", result: "합격", defect: "-" },
-];
-
-// ── 공정실적 ──
-interface ProcessRow {
-  id: string; date: string; line: string; lot: string; product: string; planQty: number; actualQty: number; temp: number; time: number; efficiency: string;
-}
-const PROCESS_DATA: ProcessRow[] = [
-  { id: "PR-001", date: "2026-06-27", line: "1호 라인", lot: "LOT-2026-0627-001", product: "Sn63Pb37", planQty: 500, actualQty: 498, temp: 1178, time: 45, efficiency: "99.6%" },
-  { id: "PR-002", date: "2026-06-27", line: "2호 라인", lot: "LOT-2026-0627-002", product: "Sn60Pb40", planQty: 400, actualQty: 402, temp: 1182, time: 43, efficiency: "100.5%" },
-  { id: "PR-003", date: "2026-06-26", line: "3호 라인", lot: "LOT-2026-0626-001", product: "Sn63Pb37", planQty: 600, actualQty: 587, temp: 1175, time: 47, efficiency: "97.8%" },
-  { id: "PR-004", date: "2026-06-26", line: "1호 라인", lot: "LOT-2026-0626-002", product: "Sn60Pb40", planQty: 350, actualQty: 351, temp: 1180, time: 44, efficiency: "100.3%" },
-  { id: "PR-005", date: "2026-06-25", line: "2호 라인", lot: "LOT-2026-0625-001", product: "Sn63Pb37", planQty: 500, actualQty: 495, temp: 1179, time: 46, efficiency: "99.0%" },
-];
-
-// ── 출하이력 ──
-interface ShipRow {
-  id: string; date: string; lot: string; product: string; customer: string; qty: number; destination: string; status: string;
-}
-const SHIP_DATA: ShipRow[] = [
-  { id: "SH-001", date: "2026-06-27", lot: "LOT-2026-0625-001", product: "Sn63Pb37", customer: "현대모비스", qty: 490, destination: "울산 공장", status: "출하완료" },
-  { id: "SH-002", date: "2026-06-27", lot: "LOT-2026-0624-002", product: "Sn60Pb40", customer: "LG전자",    qty: 350, destination: "구미 공장", status: "출하완료" },
-  { id: "SH-003", date: "2026-06-26", lot: "LOT-2026-0624-001", product: "Sn63Pb37", customer: "삼성전기",  qty: 600, destination: "수원 공장", status: "출하완료" },
-  { id: "SH-004", date: "2026-06-26", lot: "LOT-2026-0623-003", product: "Sn60Pb40", customer: "현대모비스", qty: 400, destination: "아산 공장", status: "출하완료" },
-  { id: "SH-005", date: "2026-06-27", lot: "LOT-2026-0626-001", product: "Sn63Pb37", customer: "삼성전기",  qty: 500, destination: "수원 공장", status: "준비중" },
-];
-
-// ─── Column definitions ────────────────────────────────────────────────────────
-
-const COLUMNS_MAP: Record<DataType, Column<Record<string, unknown>>[]> = {
-  성분분석: [
-    { key: "id",       header: "분석번호", width: 110 },
-    { key: "date",     header: "분석일",   width: 110 },
-    { key: "lot",      header: "LOT번호",  width: 140 },
-    { key: "supplier", header: "공급사",   width: 90  },
-    { key: "sn",       header: "SN (%)",   width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toFixed(2)}</span> },
-    { key: "ag",       header: "AG (%)",   width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toFixed(2)}</span> },
-    { key: "cu",       header: "CU (%)",   width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toFixed(2)}</span> },
-    { key: "pb",       header: "PB (%)",   width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toFixed(2)}</span> },
-    { key: "result",   header: "판정",     width: 80, align: "center",
-      render: (v) => {
-        const s = v === "합격" ? { color: "#16A34A", bg: "#ECFDF3" } : v === "불합격" ? { color: "#DC2626", bg: "#FEF1F2" } : { color: "#B45309", bg: "#FEF6E7" };
-        return <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, color: s.color, background: s.bg }}>{v as string}</span>;
-      } },
-  ],
-  입고이력: [
-    { key: "id",        header: "입고번호",  width: 110 },
-    { key: "date",      header: "입고일",    width: 110 },
-    { key: "lot",       header: "LOT번호",   width: 140 },
-    { key: "material",  header: "원자재",    width: 80  },
-    { key: "supplier",  header: "공급사",    width: 90  },
-    { key: "qty",       header: "수량(kg)",  width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-    { key: "unitPrice", header: "단가(원)",  width: 110, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-    { key: "total",     header: "합계(원)",  width: 130, align: "right",
-      render: (v) => <strong style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</strong> },
-  ],
-  품질검사: [
-    { key: "id",        header: "검사번호",  width: 110 },
-    { key: "date",      header: "검사일",    width: 110 },
-    { key: "lot",       header: "LOT번호",   width: 160 },
-    { key: "product",   header: "제품",      width: 110 },
-    { key: "score",     header: "품질점수",  width: 100, align: "right",
-      render: (v) => {
-        const score = v as number;
-        const color = score >= 87 ? "#16A34A" : score >= 84 ? "#D97706" : "#DC2626";
-        return <strong style={{ color, fontVariantNumeric: "tabular-nums" }}>{score.toFixed(1)}</strong>;
-      } },
-    { key: "inspector", header: "검수자",    width: 90  },
-    { key: "result",    header: "판정",      width: 80, align: "center",
-      render: (v) => {
-        const s = v === "합격" ? { color: "#16A34A", bg: "#ECFDF3" } : { color: "#DC2626", bg: "#FEF1F2" };
-        return <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, color: s.color, background: s.bg }}>{v as string}</span>;
-      } },
-    { key: "defect",    header: "불량 원인", width: 110 },
-  ],
-  공정실적: [
-    { key: "id",         header: "실적번호",  width: 110 },
-    { key: "date",       header: "생산일",    width: 110 },
-    { key: "line",       header: "라인",      width: 90  },
-    { key: "lot",        header: "LOT번호",   width: 155 },
-    { key: "product",    header: "제품",      width: 110 },
-    { key: "planQty",    header: "계획(kg)",  width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-    { key: "actualQty",  header: "실적(kg)",  width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-    { key: "temp",       header: "온도(°C)",  width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{v as number}</span> },
-    { key: "efficiency", header: "달성률",    width: 80, align: "right" },
-  ],
-  출하이력: [
-    { key: "id",          header: "출하번호",  width: 110 },
-    { key: "date",        header: "출하일",    width: 110 },
-    { key: "lot",         header: "LOT번호",   width: 155 },
-    { key: "product",     header: "제품",      width: 110 },
-    { key: "customer",    header: "고객사",    width: 110 },
-    { key: "qty",         header: "수량(kg)",  width: 90, align: "right",
-      render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-    { key: "destination", header: "납품처",    width: 120 },
-    { key: "status",      header: "상태",      width: 90, align: "center",
-      render: (v) => {
-        const s = v === "출하완료" ? { color: "#16A34A", bg: "#ECFDF3" } : { color: "#D97706", bg: "#FEF6E7" };
-        return <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, color: s.color, background: s.bg }}>{v as string}</span>;
-      } },
-  ],
+/**
+ * 소수 자릿수 — **DB 정의에서 유도한다** (db-schema §3.1·3.2·3.4).
+ * 성분/편차 `DECIMAL(6,3)` → 3자리 · 품질점수 `DECIMAL(5,2)` → 2자리 ·
+ * 온도 `DECIMAL(5,1)` → 1자리 · `time_min INTEGER` → 0자리.
+ */
+const DIGITS: Record<string, number> = {
+  sn_ratio: 3, ag_ratio: 3, cu_ratio: 3, pb_ratio: 3,
+  sn: 3, ag: 3, cu: 3, pb: 3,
+  sn_deviation: 3, ag_deviation: 3, cu_deviation: 3,
+  quality_score: 2, score: 2,
+  temperature: 1,
+  time_min: 0,
 };
 
-const DATA_SOURCE: Record<DataType, Record<string, unknown>[]> = {
-  성분분석: COMPONENT_DATA as unknown as Record<string, unknown>[],
-  입고이력: PURCHASE_DATA  as unknown as Record<string, unknown>[],
-  품질검사: QUALITY_DATA   as unknown as Record<string, unknown>[],
-  공정실적: PROCESS_DATA   as unknown as Record<string, unknown>[],
-  출하이력: SHIP_DATA      as unknown as Record<string, unknown>[],
+const UNITS: Record<string, string> = {
+  sn_ratio: "%", ag_ratio: "%", cu_ratio: "%", pb_ratio: "%",
+  sn: "%", ag: "%", cu: "%", pb: "%",
+  sn_deviation: "%", ag_deviation: "%", cu_deviation: "%",
+  quality_score: "점", score: "점",
+  temperature: "°C",
+  time_min: "분",
 };
 
-const DATA_TYPES: DataType[] = ["성분분석", "입고이력", "품질검사", "공정실적", "출하이력"];
+const SIGNED = new Set(["sn_deviation", "ag_deviation", "cu_deviation"]);
 
-const TYPE_STYLES: Record<DataType, { color: string; bg: string }> = {
-  성분분석: { color: "#3A5BD9", bg: "#EEF1FD" },
-  입고이력: { color: "#7C3AED", bg: "#F5F3FF" },
-  품질검사: { color: "#16A34A", bg: "#ECFDF3" },
-  공정실적: { color: "#D97706", bg: "#FEF6E7" },
-  출하이력: { color: "#687182", bg: "#F8F9FB" },
+function formatCell(col: DataColumn, raw: unknown): string {
+  if (raw === null || raw === undefined) return "—";
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    const d = DIGITS[col.key];
+    if (d === undefined) return String(raw);
+    const s = raw.toFixed(d);
+    const withSign = SIGNED.has(col.key) && raw > 0 ? `+${s}` : s;
+    const unit = UNITS[col.key];
+    return unit ? `${withSign}${unit === "%" || unit === "°C" ? "" : " "}${unit}` : withSign;
+  }
+  return cell(raw);
+}
+
+interface Form {
+  entity: QueryEntity;
+  dateFrom: string;
+  dateTo: string;
+  supplier: string;
+  lotId: string;
+  pageSize: number;
+}
+
+const INITIAL: Form = {
+  entity: "lots",
+  dateFrom: "",
+  dateTo: "",
+  supplier: "",
+  lotId: "",
+  pageSize: 50,
 };
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function DataQueryPage() {
-  const [selectedType, setSelectedType] = useState<DataType>("성분분석");
-  const [startDate, setStartDate] = useState("2026-06-01");
-  const [endDate,   setEndDate]   = useState("2026-06-27");
-  const [supplier,  setSupplier]  = useState("");
-  const [lotNo,     setLotNo]     = useState("");
-  const [hasQueried, setHasQueried] = useState(false);
-  const [results,    setResults]    = useState<Record<string, unknown>[]>([]);
+  const [form, setForm] = useState<Form>(INITIAL);
+  /** `null` = 아직 조회 전. 안내 EmptyState 를 유지한다 (§9) */
+  const [applied, setApplied] = useState<Form | null>(null);
+  const [page, setPage] = useState(1);
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
 
-  function handleQuery() {
-    const base = DATA_SOURCE[selectedType];
-    let filtered = base;
+  /** 공급사 선택지 — **서버 응답으로 만든다.** `SUP_A/B/C` 를 하드코딩하지 않는다 */
+  const suppliers = useApi(() => getSuppliers(true), []);
 
-    if (supplier.trim()) {
-      filtered = filtered.filter((r) =>
-        typeof r.supplier === "string" && r.supplier.toLowerCase().includes(supplier.toLowerCase())
-      );
-    }
-    if (lotNo.trim()) {
-      filtered = filtered.filter((r) =>
-        typeof r.lot === "string" && r.lot.toLowerCase().includes(lotNo.toLowerCase())
-      );
-    }
+  const supplierOptions = useMemo(
+    () => [
+      { value: "", label: "전체" },
+      ...(suppliers.data?.items ?? []).map((s) => ({
+        value: s.code,
+        label: `${s.code} · ${s.name}`,
+      })),
+    ],
+    [suppliers.data]
+  );
 
-    setResults(filtered);
-    setHasQueried(true);
-  }
+  const rangeInverted =
+    form.dateFrom !== "" && form.dateTo !== "" && form.dateFrom > form.dateTo;
+  const lotTooLong = form.lotId.trim().length > 20; // `lots.lot_id VARCHAR(20)`
 
-  const inputStyle: React.CSSProperties = {
-    height: 36, padding: "0 12px", border: "1px solid #E4E7EC", borderRadius: 8,
-    fontSize: 13, color: "#161B26", background: "#fff", outline: "none", fontFamily: "inherit",
+  const state = useApi(
+    () =>
+      applied
+        ? getDataQuery(applied.entity, {
+            page,
+            page_size: applied.pageSize,
+            // 🔴 여기가 개편의 핵심이다 — 날짜가 **실제로 서버로 간다**
+            date_from: applied.dateFrom || undefined,
+            date_to: applied.dateTo || undefined,
+            supplier: applied.supplier || undefined,
+            lot_id: applied.lotId.trim() || undefined,
+          })
+        : Promise.reject(new Error("조회 전")),
+    [applied ? JSON.stringify(applied) : "", page],
+    applied !== null
+  );
+
+  const columns = state.data?.columns ?? [];
+  const rows = useMemo(() => state.data?.items ?? [], [state.data]);
+  const total = state.data?.total ?? 0;
+
+  const runQuery = () => {
+    setApplied({ ...form });
+    setPage(1);
   };
 
-  const columns = COLUMNS_MAP[selectedType];
-  const typeStyle = TYPE_STYLES[selectedType];
+  const reset = () => {
+    setForm(INITIAL);
+    setApplied(null);
+    setPage(1);
+    setNotice(null);
+  };
+
+  /**
+   * 🔴 **`exportData()` 를 쓴다.** `<a href>` / `window.location` 은
+   * `Authorization: Bearer` 헤더를 붙일 수 없다 (api-contract §3.1 · §8.9).
+   * 파일명은 서버 `Content-Disposition` 에서 파싱한 값을 그대로 쓴다.
+   */
+  const download = useCallback(
+    async (format: ExportFormat) => {
+      const q = applied ?? form;
+      setExporting(format);
+      setNotice(null);
+      try {
+        const file = await exportData(q.entity, format, {
+          date_from: q.dateFrom || undefined,
+          date_to: q.dateTo || undefined,
+          supplier: q.supplier || undefined,
+        });
+        const url = URL.createObjectURL(file.blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = file.filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        setNotice({ tone: "ok", text: `${file.filename} 을(를) 내려받았습니다.` });
+      } catch (err) {
+        const msg = errText(err);
+        setNotice({
+          tone: "error",
+          text: /422/.test(msg)
+            ? "내보낼 수 있는 최대 행 수(100,000)를 초과했습니다. 기간을 좁혀 주세요."
+            : msg,
+        });
+      } finally {
+        setExporting(null);
+      }
+    },
+    [applied, form]
+  );
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>데이터 조회</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>유형별 조건 검색 및 결과 조회</p>
-      </div>
+    <PageShell>
+      <PageHeader title="데이터 조회" subtitle="유형별 조건 검색 및 결과 조회" />
 
-      {/* Query form */}
-      <div className="card">
-        {/* Data type selector */}
-        <div style={{ marginBottom: 20 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#687182", letterSpacing: "0.03em", textTransform: "uppercase", marginBottom: 10 }}>
-            데이터 유형
-          </div>
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {DATA_TYPES.map((t) => {
-              const active = selectedType === t;
-              const ts = TYPE_STYLES[t];
-              return (
-                <button
-                  key={t}
-                  onClick={() => { setSelectedType(t); setHasQueried(false); }}
-                  style={{
-                    padding: "6px 16px", fontSize: 13, fontWeight: 600, borderRadius: 20,
-                    border: active ? "none" : "1px solid #E4E7EC",
-                    background: active ? ts.color : "#F8F9FB",
-                    color: active ? "#fff" : "#687182",
-                    cursor: "pointer", transition: "all 0.15s",
-                  }}
-                >
-                  {t}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+      {notice && <Notice tone={notice.tone === "ok" ? "ok" : "error"}>{notice.text}</Notice>}
 
-        {/* Period + filters */}
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div>
-            <div style={{ fontSize: 11.5, fontWeight: 600, color: "#687182", marginBottom: 6, letterSpacing: "0.03em", textTransform: "uppercase" }}>기간</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={{ ...inputStyle, width: 150 }} />
-              <span style={{ color: "#9AA4B2", fontSize: 13 }}>~</span>
-              <input type="date" value={endDate}   onChange={(e) => setEndDate(e.target.value)}   style={{ ...inputStyle, width: 150 }} />
-            </div>
-          </div>
-          <div>
-            <div style={{ fontSize: 11.5, fontWeight: 600, color: "#687182", marginBottom: 6, letterSpacing: "0.03em", textTransform: "uppercase" }}>공급사</div>
-            <input
-              type="text" value={supplier} onChange={(e) => setSupplier(e.target.value)}
-              placeholder="SUP_A"
-              style={{ ...inputStyle, width: 120 }}
+      <Section title="조회 조건">
+        <Chips
+          value={form.entity}
+          onChange={(v) => setForm((f) => ({ ...f, entity: v as QueryEntity }))}
+          options={ENTITIES}
+        />
+
+        <FilterBar>
+          <Field label="기간 시작" htmlFor="q-from" width={150}>
+            <DateInput
+              id="q-from"
+              value={form.dateFrom}
+              onChange={(v) => setForm((f) => ({ ...f, dateFrom: v }))}
+              invalid={rangeInverted}
             />
-          </div>
-          <div>
-            <div style={{ fontSize: 11.5, fontWeight: 600, color: "#687182", marginBottom: 6, letterSpacing: "0.03em", textTransform: "uppercase" }}>LOT번호</div>
-            <input
-              type="text" value={lotNo} onChange={(e) => setLotNo(e.target.value)}
-              placeholder="LOT-A-..."
-              style={{ ...inputStyle, width: 160 }}
+          </Field>
+
+          <Field label="기간 종료" htmlFor="q-to" width={150}>
+            <DateInput
+              id="q-to"
+              value={form.dateTo}
+              onChange={(v) => setForm((f) => ({ ...f, dateTo: v }))}
+              invalid={rangeInverted}
             />
-          </div>
+          </Field>
+
+          <Field label="공급사" htmlFor="q-sup" width={190}>
+            <Select
+              id="q-sup"
+              value={form.supplier}
+              onChange={(v) => setForm((f) => ({ ...f, supplier: v }))}
+              options={supplierOptions}
+              disabled={suppliers.loading || suppliers.error !== null}
+              width={190}
+            />
+          </Field>
+
+          <Field label="LOT 번호" htmlFor="q-lot" width={170}>
+            <TextInput
+              id="q-lot"
+              value={form.lotId}
+              onChange={(v) => setForm((f) => ({ ...f, lotId: v }))}
+              invalid={lotTooLong}
+              placeholder="LOT-2026-001"
+            />
+          </Field>
+
+          <Field label="페이지 크기" htmlFor="q-size" width={120}>
+            <Select
+              id="q-size"
+              value={String(form.pageSize)}
+              onChange={(v) => setForm((f) => ({ ...f, pageSize: Number(v) }))}
+              options={PAGE_SIZE_OPTIONS}
+              width={120}
+            />
+          </Field>
+
           <button
-            onClick={handleQuery}
-            style={{
-              height: 36, padding: "0 24px", fontSize: 13, fontWeight: 700,
-              borderRadius: 8, border: "none", background: typeStyle.color,
-              color: "#fff", cursor: "pointer",
-            }}
+            type="button"
+            className="btn btn-primary"
+            disabled={rangeInverted || lotTooLong || state.loading}
+            onClick={runQuery}
+            style={{ height: 34 }}
           >
-            조회
+            {state.loading ? "조회 중…" : "조회"}
           </button>
-          <button
-            onClick={() => { setSupplier(""); setLotNo(""); setHasQueried(false); setResults([]); }}
-            style={{
-              height: 36, padding: "0 16px", fontSize: 13, fontWeight: 600,
-              borderRadius: 8, border: "1px solid #E4E7EC", background: "#F8F9FB",
-              color: "#687182", cursor: "pointer",
-            }}
-          >
+          <button type="button" className="btn" onClick={reset} style={{ height: 34 }}>
             초기화
           </button>
-        </div>
-      </div>
+        </FilterBar>
 
-      {/* Results */}
-      {hasQueried && (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 10,
-            padding: "14px 16px", borderBottom: "1px solid #E4E7EC", flexWrap: "wrap",
-          }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 9px", borderRadius: 20, color: typeStyle.color, background: typeStyle.bg }}>
-                {selectedType}
-              </span>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>조회 결과</span>
-              <span style={{ fontSize: 12, color: "#9AA4B2" }}>{results.length}건</span>
-            </span>
-            <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
-              <button style={{
-                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6,
-                border: "1px solid #E4E7EC", background: "#F8F9FB", color: "#687182", cursor: "pointer",
-              }}>
-                CSV 다운로드
-              </button>
-              <button style={{
-                padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6,
-                border: "1px solid #E4E7EC", background: "#F8F9FB", color: "#687182", cursor: "pointer",
-              }}>
-                Excel 다운로드
-              </button>
+        {rangeInverted && (
+          <span style={{ fontSize: 11.5, color: T.error }}>종료일이 시작일보다 빠릅니다</span>
+        )}
+        {lotTooLong && (
+          <span style={{ fontSize: 11.5, color: T.error }}>LOT 번호는 20자를 넘을 수 없습니다</span>
+        )}
+        {suppliers.error && (
+          <InlineError message={suppliers.error} onRetry={suppliers.refetch} />
+        )}
+      </Section>
+
+      <Section
+        title={`조회 결과${applied ? ` (${state.loading || state.error ? "—" : total.toLocaleString()}건)` : ""}`}
+        right={
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              type="button"
+              className="btn"
+              disabled={exporting !== null || rangeInverted}
+              onClick={() => void download("csv")}
+            >
+              {exporting === "csv" ? "생성 중…" : "CSV 다운로드"}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={exporting !== null || rangeInverted}
+              onClick={() => void download("xlsx")}
+            >
+              {exporting === "xlsx" ? "생성 중…" : "Excel 다운로드"}
+            </button>
+          </div>
+        }
+      >
+        {applied === null && <Center>조회 조건을 설정하고 조회 버튼을 눌러주세요.</Center>}
+
+        {applied !== null && state.error && (
+          <InlineError message={state.error} onRetry={state.refetch} />
+        )}
+
+        {applied !== null && state.loading && <Center>불러오는 중…</Center>}
+
+        {applied !== null && !state.loading && !state.error && rows.length === 0 && (
+          <Center>조건에 맞는 데이터가 없습니다.</Center>
+        )}
+
+        {applied !== null && !state.loading && !state.error && rows.length > 0 && (
+          <>
+            <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 12 }}>
+              <table
+                style={{
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 12.5,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                <thead>
+                  <tr style={{ background: "#F8F9FB" }}>
+                    {/* 🔴 헤더는 응답 `columns` 로 만든다. 하드코딩 상수가 없다 */}
+                    {columns.map((c) => (
+                      <th
+                        key={c.key}
+                        style={{
+                          padding: "10px 12px",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: T.textSub,
+                          textAlign: c.type === "number" ? "right" : "left",
+                          whiteSpace: "nowrap",
+                          borderBottom: `1px solid ${T.border}`,
+                        }}
+                      >
+                        {c.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((row, i) => (
+                    <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                      {columns.map((c) => (
+                        <td
+                          key={c.key}
+                          style={{
+                            padding: "9px 12px",
+                            color: T.text,
+                            textAlign: c.type === "number" ? "right" : "left",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {formatCell(c, row[c.key])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
-          <DataTable
-            columns={columns as Column<Record<string, unknown>>[]}
-            data={results}
-            rowKey={(_, i) => i}
-            emptyText="조건에 맞는 데이터가 없습니다."
-            stickyHeader
-          />
-        </div>
-      )}
 
-      {!hasQueried && (
-        <div className="card" style={{ padding: "48px 24px", textAlign: "center" }}>
-          <div style={{ fontSize: 32, marginBottom: 12 }}>🔍</div>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#687182", marginBottom: 4 }}>
-            조회 조건을 설정하고 조회 버튼을 눌러주세요
-          </div>
-          <div style={{ fontSize: 12, color: "#9AA4B2" }}>
-            데이터 유형, 기간, 필터를 선택한 후 결과를 확인할 수 있습니다
-          </div>
-        </div>
-      )}
+            <Pagination
+              page={page}
+              pageSize={applied.pageSize}
+              total={total}
+              onPage={setPage}
+            />
+          </>
+        )}
+      </Section>
+    </PageShell>
+  );
+}
+
+function Center({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        minHeight: 200,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        fontSize: 13,
+        color: T.textMuted,
+      }}
+    >
+      {children}
     </div>
   );
 }

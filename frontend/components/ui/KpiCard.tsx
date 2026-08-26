@@ -1,6 +1,23 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+/**
+ * KpiCard — SF-TD3 §4 공통 KPI 카드.
+ *
+ * 웨이브 C 패치 (`specs/design-charts.md` §4.2):
+ * 카드 안에 있던 private `Sparkline`(83줄) 을 **삭제하고 `TrendChart` 로 흡수**했다.
+ * DPR 스케일링 · `color+"40"`/`color+"00"` 그라디언트 · `quadraticCurveTo` 루프 ·
+ * 흰 테두리 엔드포인트 도트가 캔버스 차트 10벌과 **완전히 같은 코드**였다.
+ * 캔버스 · 폭 100% · 축 없음이라 `TrendChart` 스파크라인 모드와 렌더 정책도 일치한다.
+ *
+ * ⚠ **공개 시그니처(`KpiCardProps`)는 바뀌지 않았다.** 이 컴포넌트를 쓰는 9개 화면은
+ *   그대로 동작한다. `accentColor` 도 `string` 을 유지한다 (토큰 이름을 넘기면
+ *   `TrendChart` 가 토큰으로 해석하고, hex 를 넘기면 그대로 쓴다).
+ *
+ * `components/charts/MiniSparkline` 은 **남긴다** — 순수 SVG · 고정 px · 서버 렌더 가능이라
+ * 테이블 셀 안 인라인 미니차트라는 다른 용도를 담당한다 (design-charts §4.1).
+ */
+
+import { TrendChart } from "@/components/charts/TrendChart";
 
 interface SparklinePoint {
   value: number;
@@ -14,90 +31,6 @@ interface KpiCardProps {
   trendValue?: string;
   sparkline?: SparklinePoint[];
   accentColor?: string;
-}
-
-function Sparkline({
-  data,
-  color,
-}: {
-  data: SparklinePoint[];
-  color: string;
-}) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || data.length < 2) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth;
-    const H = canvas.offsetHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
-
-    const values = data.map((d) => d.value);
-    const min = Math.min(...values);
-    const max = Math.max(...values);
-    const range = max - min || 1;
-
-    const px = (i: number) => (i / (data.length - 1)) * W;
-    const py = (v: number) => H - 4 - ((v - min) / range) * (H - 8);
-
-    // Area fill
-    const grad = ctx.createLinearGradient(0, 0, 0, H);
-    grad.addColorStop(0, color + "40");
-    grad.addColorStop(1, color + "00");
-
-    ctx.beginPath();
-    ctx.moveTo(px(0), py(values[0]));
-    for (let i = 1; i < values.length; i++) {
-      const xc = (px(i - 1) + px(i)) / 2;
-      const yc = (py(values[i - 1]) + py(values[i])) / 2;
-      ctx.quadraticCurveTo(px(i - 1), py(values[i - 1]), xc, yc);
-    }
-    ctx.lineTo(px(values.length - 1), py(values[values.length - 1]));
-    ctx.lineTo(px(values.length - 1), H);
-    ctx.lineTo(px(0), H);
-    ctx.closePath();
-    ctx.fillStyle = grad;
-    ctx.fill();
-
-    // Line
-    ctx.beginPath();
-    ctx.moveTo(px(0), py(values[0]));
-    for (let i = 1; i < values.length; i++) {
-      const xc = (px(i - 1) + px(i)) / 2;
-      const yc = (py(values[i - 1]) + py(values[i])) / 2;
-      ctx.quadraticCurveTo(px(i - 1), py(values[i - 1]), xc, yc);
-    }
-    ctx.lineTo(px(values.length - 1), py(values[values.length - 1]));
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Endpoint dot
-    const lastX = px(values.length - 1);
-    const lastY = py(values[values.length - 1]);
-    ctx.beginPath();
-    ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.beginPath();
-    ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-  }, [data, color]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: "100%", height: "100%", display: "block" }}
-    />
-  );
 }
 
 const TREND_CONFIG = {
@@ -164,7 +97,7 @@ export function KpiCard({
           style={{
             fontSize: 26,
             fontWeight: 800,
-            color: "#161B26",
+            color: "var(--color-text, #161B26)",
             lineHeight: 1,
             fontVariantNumeric: "tabular-nums",
             letterSpacing: "-0.02em",
@@ -179,10 +112,20 @@ export function KpiCard({
         )}
       </div>
 
-      {/* Sparkline */}
+      {/* 스파크라인 — TrendChart 스파크라인 모드 (축·그리드·범례 없음) */}
       {sparkline && sparkline.length > 1 && (
-        <div style={{ height: 40, marginTop: 4 }}>
-          <Sparkline data={sparkline} color={accentColor} />
+        <div style={{ marginTop: 4 }}>
+          <TrendChart
+            height={40}
+            showAxis={false}
+            legend={false}
+            dots="last"
+            categories={sparkline.map((_, i) => String(i))}
+            series={[
+              { name: label, values: sparkline.map((p) => p.value), color: accentColor },
+            ]}
+            ariaLabel={`${label} 추이`}
+          />
         </div>
       )}
     </div>

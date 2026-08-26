@@ -1,20 +1,43 @@
-@import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css');
+/* Pretendard 를 **로컬 번들**에서 읽는다 (SF-TD3 §1 지정 폰트).
+   CDN(jsdelivr) 을 쓰면 공장 폐쇄망에서 폰트가 통째로 안 내려온다 (QA3 지적).
+   동적 서브셋이라 유니코드 범위별로 쪼개져 실제로 쓰는 글자만 받는다. */
+@import 'pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css';
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * SF-TD3 §1.1 디자인 토큰.
+ * 이 파일이 **런타임 정본**이다. `lib/tokens.ts` 가 같은 표를 TS 쪽에 들고 있고,
+ * `components/{ui,charts}/tokens.ts` 는 거기서 파생된다. 색을 추가할 때 두 곳을 같이 고쳐라.
+ *
+ * ⚠ SF-TD3 표와 값이 다른 2건 — 의도적으로 현 구현을 유지한다.
+ *   --color-text   TD3 #1A2035 → 여기 #161B26 (44화면이 228곳에 #161B26 하드코딩)
+ *   --color-border TD3 #E2E6EF → 여기 #E4E7EC (44화면이 170곳에 #E4E7EC 하드코딩)
+ *   지금 TD3 값으로 바꾸면 공용 컴포넌트와 44화면이 서로 다른 회색을 칠한다.
+ *   웨이브 C 가 하드코딩 hex 를 토큰으로 전부 치환한 뒤 **한 커밋에서** 뒤집는다.
+ *   판정 근거와 절차: specs/design-standards.md §4
+ */
 :root {
   --color-bg: #EEF0F4;
   --color-sidebar: #0E1320;
+  --color-sidebar-text: #E7EAF0;
   --color-primary: #3A5BD9;
   --color-primary-light: #6B8AFF;
-  --color-text: #161B26;
+  --color-text: #1A2035;          /* SF-TD3 §1 정본. 2026-08-26 전환 — 아래 주석 참고 */
   --color-text-sub: #687182;
   --color-text-muted: #9AA4B2;
-  --color-border: #E4E7EC;
+  --color-border: #E2E6EF;        /* SF-TD3 §1 정본. 2026-08-26 전환 — 아래 주석 참고 */
   --color-white: #ffffff;
   --color-card: #ffffff;
+  --color-surface-subtle: #F8F9FB;
+
+  /* 상태 색 — SF-TD3 §1.1 값 그대로. 신규 선언이라 기존 화면과 충돌하지 않는다.
+     배지의 진한 텍스트/옅은 배경은 아래 badge 토큰이 따로 담당한다. */
+  --color-success: #22C55E;
+  --color-warning: #F59E0B;
+  --color-error: #EF4444;
 
   /* badge colors */
   --badge-green-text: #15803D;
@@ -37,7 +60,11 @@
   }
 
   html {
-    font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    font-family: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont,
+      /* 한글 폴백 — 위가 모두 없을 때 시스템 한글 폰트로 떨어진다.
+         이전 스택은 'Segoe UI' 뒤가 곧장 sans-serif 라 한글 커버리지가 보장되지 않았다 */
+      'Apple SD Gothic Neo', 'Malgun Gothic', '맑은 고딕', 'Noto Sans KR',
+      'Segoe UI', sans-serif;
   }
 
   body {
@@ -73,9 +100,11 @@
     cursor: pointer;
     transition: background 0.15s, border-color 0.15s;
     line-height: 1;
+    /* .btn 은 <a>(next/link) 에도 붙는다 — 기본 밑줄을 지운다 */
+    text-decoration: none;
   }
   .btn:hover {
-    background: #F8F9FB;
+    background: var(--color-surface-subtle);
   }
   .btn.pri {
     background: var(--color-primary);
@@ -95,3 +124,17 @@
   .p-violet { color: var(--badge-violet-text); background: var(--badge-violet-bg); }
   .p-gray   { color: var(--badge-gray-text);   background: var(--badge-gray-bg); }
 }
+
+/* ── 토큰 전환 기록 (2026-08-26) ────────────────────────────────────────────────
+   `--color-text` 와 `--color-border` 를 SF-TD3 §1 정본값으로 바꿨다.
+     text   #161B26 → #1A2035
+     border #E4E7EC → #E2E6EF
+
+   초판에는 바꾸지 못했다. 44화면이 옛 값을 **맨 hex 로 하드코딩**하고 있어
+   (`#161B26` 228곳 · `#E4E7EC` 170곳) 변수만 바꾸면 `.card` 테두리와 바로 옆
+   인라인 테두리가 서로 다른 회색이 되기 때문이었다.
+
+   라운드 2 재작성으로 하드코딩이 각각 8곳·1곳까지 줄었고, 그 잔여분도
+   `var(--color-*, 폴백)` 또는 `readTokens()`(canvas 전용)로 정리해 **맨 hex 0건**을
+   확인한 뒤 전환했다. 폴백 hex 는 CSS 가 없는 환경용이라 값이 옛것이어도 무해하다.
+   ────────────────────────────────────────────────────────────────────────────── */

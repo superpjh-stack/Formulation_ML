@@ -1,214 +1,443 @@
 "use client";
 
-import { useState } from "react";
-import { KpiCard } from "@/components/ui/KpiCard";
-import { DataTable, Column } from "@/components/ui/DataTable";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+/**
+ * FE-RT-16 · `/shipping/main` · 출하 현황 (FR-S-01)
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 삭제한 것
+ *   - `MOCK_ORDERS` 15건 하드코딩 → `GET /api/v1/shipments`
+ *   - 상태 4종(`완료`/`진행중`/`대기`/`승인대기`) 과 `[승인]` 버튼
+ *     → **저장할 곳도 요구사항 근거도 없다.** `shipments` 에 `status` 컬럼이 없고
+ *       SF-AD2 에 출하 승인 워크플로가 없으며 `audit_logs.action` 에도 `APPROVE` 가 없다
+ *   - `출하번호 SH-001` 열 → `shipments` 에 없는 컬럼이다 (내부 `id` 를 노출하지 마라)
+ *   - `수량 "500 kg"` 문자열 결합 → `quantity`(숫자) + `unit`(별도 열) 로 분리
+ *   - `SPARKLINE` 상수 · `trendValue "+2건"` → 실데이터가 없으면 **그리지 않는다**
+ *
+ * 🆕 신규: 고객사별 출하량 막대 · 출하 일정 캘린더 (FR-S-01 이 명시한 3대 구성요소 중
+ *   둘이 통째로 빠져 있었다)
+ *
+ * ⚠ **`출하 대기` 는 아직 표시할 수 없다.** 명세는 서버가 `shipment_state:'shipped'|'waiting'`
+ *   를 파생해 내려주도록 요구했으나 `ShipmentDto` 에 그 필드가 아직 없다 (계약 미반영).
+ *   프론트가 `lots` 와 조인해 판정하지 말라고 명시돼 있으므로, **없는 값을 만들지 않고
+ *   "제공 전"이라고 화면에 적는다.** 상태 pill 필터도 같은 이유로 두지 않는다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface ShipOrder {
-  id: string;
-  customer: string;
-  product: string;
-  lot: string;
-  qty: string;
-  datetime: string;
-  status: "완료" | "진행중" | "대기" | "승인대기";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import * as api from "@/lib/koryo-api";
+import { KpiCard } from "@/components/ui/KpiCard";
+import { StatusScreen } from "@/components/layout/StatusScreen";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
+import { Spinner } from "@/components/ui/Spinner";
+import { T } from "@/components/ui/tokens";
+import { useDashboardShipping, useShipments } from "@/hooks/useKoryoData";
+import type { ShipmentCalendarCell, ShipmentDto } from "@/types/api";
+
+const PAGE_SIZE = 50;
+
+/**
+ * `GET /shipments/calendar?month=` — `hooks/useKoryoData.ts` 에 대응 훅이 없어서
+ * 여기서 만든다 (`hooks/` 는 개발3 소유라 수정하지 않는다).
+ * `month` 가 바뀔 때만 요청이 나간다 — 달 이동 1회당 호출 1회다.
+ */
+function useShipmentCalendar(month: string) {
+  const [data, setData] = useState<ShipmentCalendarCell[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const refetch = useCallback(() => setTick((t) => t + 1), []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .getShipmentCalendar(month)
+      .then((cells) => {
+        if (!cancelled) setData(cells);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : "캘린더를 불러오지 못했습니다");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [month, tick]);
+
+  return { data, loading, error, refetch };
 }
 
-const MOCK_ORDERS: ShipOrder[] = [
-  { id: "SH-001", customer: "삼성전자", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0621", qty: "500 kg", datetime: "2026-06-27 08:30", status: "완료" },
-  { id: "SH-002", customer: "LG이노텍", product: "Sn96.5Ag3Cu0.5 솔더합금", lot: "LOT-2026-0622", qty: "300 kg", datetime: "2026-06-27 09:15", status: "완료" },
-  { id: "SH-003", customer: "현대모비스", product: "Sn60Pb40 솔더합금", lot: "LOT-2026-0623", qty: "750 kg", datetime: "2026-06-27 10:00", status: "완료" },
-  { id: "SH-004", customer: "SK하이닉스", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0624", qty: "200 kg", datetime: "2026-06-27 10:45", status: "완료" },
-  { id: "SH-005", customer: "삼성SDI", product: "Sn96.5Ag3Cu0.5 솔더합금", lot: "LOT-2026-0625", qty: "400 kg", datetime: "2026-06-27 11:30", status: "완료" },
-  { id: "SH-006", customer: "한화에어로", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0626", qty: "600 kg", datetime: "2026-06-27 12:00", status: "완료" },
-  { id: "SH-007", customer: "두산전자", product: "Sn60Pb40 솔더합금", lot: "LOT-2026-0627", qty: "250 kg", datetime: "2026-06-27 12:30", status: "완료" },
-  { id: "SH-008", customer: "LG전자", product: "Sn96.5Ag3Cu0.5 솔더합금", lot: "LOT-2026-0628", qty: "320 kg", datetime: "2026-06-27 13:00", status: "완료" },
-  { id: "SH-009", customer: "삼성전자", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0629", qty: "450 kg", datetime: "2026-06-27 14:00", status: "진행중" },
-  { id: "SH-010", customer: "현대전자", product: "Sn60Pb40 솔더합금", lot: "LOT-2026-0630", qty: "180 kg", datetime: "2026-06-27 14:30", status: "진행중" },
-  { id: "SH-011", customer: "LG이노텍", product: "Sn96.5Ag3Cu0.5 솔더합금", lot: "LOT-2026-0631", qty: "560 kg", datetime: "2026-06-27 15:00", status: "진행중" },
-  { id: "SH-012", customer: "SK하이닉스", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0632", qty: "290 kg", datetime: "2026-06-27 15:30", status: "진행중" },
-  { id: "SH-013", customer: "LS산전", product: "Sn60Pb40 솔더합금", lot: "LOT-2026-0633", qty: "700 kg", datetime: "2026-06-27 16:00", status: "승인대기" },
-  { id: "SH-014", customer: "한국단자", product: "Sn96.5Ag3Cu0.5 솔더합금", lot: "LOT-2026-0634", qty: "210 kg", datetime: "2026-06-27 16:30", status: "대기" },
-  { id: "SH-015", customer: "KEC", product: "Sn63Pb37 솔더합금", lot: "LOT-2026-0635", qty: "380 kg", datetime: "2026-06-27 17:00", status: "대기" },
-];
-
-const STATUS_MAP: Record<ShipOrder["status"], { variant: "green" | "blue" | "amber" | "gray"; label: string }> = {
-  완료:   { variant: "green", label: "완료" },
-  진행중: { variant: "blue",  label: "진행중" },
-  대기:   { variant: "gray",  label: "대기" },
-  승인대기: { variant: "amber", label: "승인대기" },
-};
-
-const SPARKLINE = [10, 12, 9, 15, 13, 8, 14, 11, 15];
-
-const COLUMNS: Column<ShipOrder>[] = [
-  { key: "id",       header: "출하번호",  width: 100 },
-  { key: "customer", header: "고객사",    width: 120 },
-  { key: "product",  header: "제품",      width: 200 },
-  { key: "lot",      header: "LOT번호",   width: 150 },
-  { key: "qty",      header: "수량",      width: 90,  align: "right" },
-  { key: "datetime", header: "출하일시",  width: 140 },
-  {
-    key: "status",
-    header: "상태",
-    width: 100,
-    align: "center",
-    render: (_, row) => {
-      const m = STATUS_MAP[row.status];
-      return <StatusBadge variant={m.variant} label={m.label} dot />;
-    },
-  },
-  {
-    key: "id",
-    header: "액션",
-    width: 90,
-    align: "center",
-    render: (_, row) =>
-      row.status === "승인대기" ? (
-        <button
-          style={{
-            padding: "3px 10px",
-            fontSize: 11.5,
-            fontWeight: 600,
-            color: "#fff",
-            background: "#3A5BD9",
-            border: "none",
-            borderRadius: 6,
-            cursor: "pointer",
-          }}
-        >
-          승인
-        </button>
-      ) : (
-        <span style={{ color: "#C2C9D6", fontSize: 12 }}>—</span>
-      ),
-  },
-];
+function iso(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+function daysAgo(n: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return iso(d);
+}
+function monthOf(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function shiftMonth(month: string, delta: number) {
+  const [y, m] = month.split("-").map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  return monthOf(d);
+}
 
 export default function ShippingMainPage() {
-  const [filter, setFilter] = useState<"전체" | ShipOrder["status"]>("전체");
+  const [dateFrom, setDateFrom] = useState(daysAgo(6));
+  const [dateTo, setDateTo] = useState(iso(new Date()));
+  const [customer, setCustomer] = useState("");
+  const [page, setPage] = useState(1);
+  const [month, setMonth] = useState(monthOf(new Date()));
 
-  const filtered =
-    filter === "전체" ? MOCK_ORDERS : MOCK_ORDERS.filter((o) => o.status === filter);
+  const rangeError = dateFrom > dateTo ? "시작일이 종료일보다 늦습니다" : null;
 
-  const counts = {
-    total:  MOCK_ORDERS.length,
-    done:   MOCK_ORDERS.filter((o) => o.status === "완료").length,
-    active: MOCK_ORDERS.filter((o) => o.status === "진행중").length,
-    wait:   MOCK_ORDERS.filter((o) => o.status === "대기" || o.status === "승인대기").length,
-  };
+  const listQuery = useMemo(
+    () => ({
+      page,
+      page_size: PAGE_SIZE,
+      date_from: dateFrom,
+      date_to: dateTo,
+      ...(customer ? { customer } : {}),
+    }),
+    [page, dateFrom, dateTo, customer]
+  );
+
+  // 세 영역은 서로를 막지 않는다 — 각자 로딩·오류를 그린다 (§9)
+  const list = useShipments(rangeError ? {} : listQuery);
+  const dash = useDashboardShipping(7);
+  const calendar = useShipmentCalendar(month);
+
+  const items = list.data?.items ?? [];
+  const total = list.data?.total ?? 0;
+  const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  function resetRange() {
+    setDateFrom(daysAgo(6));
+    setDateTo(iso(new Date()));
+    setCustomer("");
+    setPage(1);
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Page header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0, lineHeight: 1.3 }}>
-          출하관리
-        </h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          오늘 출하 현황 · 2026년 6월 27일
-        </p>
-      </div>
-
-      {/* KPI row */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-        <KpiCard
-          label="출하 예정"
-          value={counts.total}
-          unit="건"
-          trend="neutral"
-          trendValue="오늘"
-          sparkline={SPARKLINE.map((v) => ({ value: v }))}
-          accentColor="#3A5BD9"
-        />
-        <KpiCard
-          label="완료"
-          value={counts.done}
-          unit="건"
-          trend="up"
-          trendValue="+2건"
-          sparkline={[5, 6, 7, 6, 8, 7, 8].map((v) => ({ value: v }))}
-          accentColor="#16A34A"
-        />
-        <KpiCard
-          label="진행중"
-          value={counts.active}
-          unit="건"
-          trend="neutral"
-          trendValue="현재"
-          sparkline={[3, 4, 3, 4, 4, 3, 4].map((v) => ({ value: v }))}
-          accentColor="#2563EB"
-        />
-        <KpiCard
-          label="대기"
-          value={counts.wait}
-          unit="건"
-          trend="down"
-          trendValue="-1건"
-          sparkline={[5, 4, 4, 3, 4, 3, 3].map((v) => ({ value: v }))}
-          accentColor="#F59E0B"
-        />
-      </div>
-
-      {/* Table section */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        {/* Toolbar */}
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "14px 16px",
-            borderBottom: "1px solid #E4E7EC",
-          }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26", flex: 1 }}>
-            출하 목록
-          </span>
-          {(["전체", "완료", "진행중", "대기", "승인대기"] as const).map((f) => (
-            <button
-              key={f}
-              onClick={() => setFilter(f)}
-              style={{
-                padding: "4px 12px",
-                fontSize: 12,
-                fontWeight: 600,
-                borderRadius: 20,
-                border: "1px solid",
-                cursor: "pointer",
-                transition: "all 0.12s",
-                borderColor: filter === f ? "#3A5BD9" : "#E4E7EC",
-                background: filter === f ? "#3A5BD9" : "#fff",
-                color: filter === f ? "#fff" : "#687182",
-              }}
-            >
-              {f}
-            </button>
-          ))}
-          <button
-            style={{
-              padding: "4px 14px",
-              fontSize: 12,
-              fontWeight: 600,
-              borderRadius: 6,
-              border: "1px solid #E4E7EC",
-              background: "#F8F9FB",
-              color: "#687182",
-              cursor: "pointer",
-              marginLeft: 8,
-            }}
-          >
-            내보내기
+      {/* [A] 헤더 + 필터 */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: T.text, margin: 0 }}>출하 현황</h1>
+          <p style={{ fontSize: 12.5, color: T.textSub, margin: "4px 0 0" }}>
+            출하 목록 · 고객사별 출하량 · 출하 일정 (FR-S-01)
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={labelStyle}>기간 시작</span>
+            <input type="date" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(1); }} style={inputStyle} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={labelStyle}>기간 종료</span>
+            <input type="date" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(1); }} style={inputStyle} />
+          </label>
+          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={labelStyle}>고객사</span>
+            <input
+              type="text"
+              placeholder="전체"
+              value={customer}
+              onChange={(e) => { setCustomer(e.target.value.trim()); setPage(1); }}
+              style={{ ...inputStyle, width: 140 }}
+            />
+          </label>
+          {/* `entity=shipments` 가 `/data/export` 화이트리스트에 없다 → 동작시키지 않는다 */}
+          <button type="button" className="btn" disabled title="준비 중 — 내보내기 대상에 출하 데이터가 아직 포함돼 있지 않습니다">
+            내보내기 (준비 중)
           </button>
         </div>
-        <DataTable
-          columns={COLUMNS}
-          data={filtered}
-          rowKey={(r) => r.id}
-          stickyHeader
-        />
+      </div>
+
+      {rangeError && <ErrorAlert message={`${rangeError} — 조회를 실행하지 않았습니다`} />}
+
+      {/* [B] KPI */}
+      {dash.loading ? (
+        <div className="card" style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: T.textSub }}>
+          <Spinner size="sm" /> 출하 지표를 불러오는 중
+        </div>
+      ) : dash.error ? (
+        <ErrorAlert message={`출하 지표를 불러오지 못했습니다 — ${dash.error}`} />
+      ) : dash.data ? (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+          <KpiCard label="오늘 출하량" value={dash.data.today_qty.toFixed(1)} unit="kg" />
+          <KpiCard label="주간 출하량" value={dash.data.week_qty.toFixed(1)} unit="kg" />
+          <KpiCard label="출하 완료" value={list.loading ? "—" : total.toLocaleString("ko-KR")} unit="건" />
+          <div className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "center", gap: 4 }}>
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: T.textSub }}>출하 대기</div>
+            <div style={{ fontSize: 13, color: T.textMuted, lineHeight: 1.5 }}>
+              제공 전 — 출하 대기 판정(<code>shipment_state</code>)은 서버가 내려줘야 하며 아직 응답에
+              없습니다. 화면에서 임의로 계산하지 않습니다.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        {/* [C] 고객사별 출하량 */}
+        <div className="card">
+          <div style={sectionTitle}>고객사별 출하량 (최근 7일)</div>
+          {dash.loading ? (
+            <Spinner size="sm" />
+          ) : dash.error ? (
+            <ErrorAlert message={dash.error} />
+          ) : (dash.data?.by_customer.length ?? 0) === 0 ? (
+            <p style={{ fontSize: 12.5, color: T.textMuted, margin: 0 }}>최근 7일 출하 실적이 없습니다.</p>
+          ) : (
+            <CustomerBars rows={dash.data!.by_customer} />
+          )}
+        </div>
+
+        {/* [D] 출하 일정 캘린더 */}
+        <div className="card">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div style={{ ...sectionTitle, marginBottom: 0 }}>출하 일정</div>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <button type="button" className="btn" onClick={() => setMonth((m) => shiftMonth(m, -1))}>
+                ‹
+              </button>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: T.text, minWidth: 70, textAlign: "center" }}>
+                {month}
+              </span>
+              <button type="button" className="btn" onClick={() => setMonth((m) => shiftMonth(m, 1))}>
+                ›
+              </button>
+            </div>
+          </div>
+          {calendar.loading ? (
+            <Spinner size="sm" />
+          ) : calendar.error ? (
+            <ErrorAlert message={`캘린더를 불러오지 못했습니다 — ${calendar.error}`} />
+          ) : (
+            <MonthCalendar month={month} cells={calendar.data ?? []} />
+          )}
+        </div>
+      </div>
+
+      {/* [E] 출하 목록 */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <div style={sectionTitle}>출하 목록</div>
+          <span style={{ fontSize: 12, color: T.textSub }}>
+            {list.loading ? "조회 중" : `총 ${total.toLocaleString("ko-KR")}건`}
+          </span>
+        </div>
+
+        {rangeError ? null : list.loading ? (
+          <StatusScreen tone="loading" title="출하 목록을 불러오는 중" />
+        ) : list.error ? (
+          <ErrorAlert message={`출하 목록을 불러오지 못했습니다 — ${list.error}`} />
+        ) : items.length === 0 ? (
+          <StatusScreen
+            tone="empty"
+            title="선택한 기간에 출하 내역이 없습니다"
+            actions={[{ label: "기간 초기화", onClick: resetRange, primary: true }]}
+          />
+        ) : (
+          <ShipmentTable rows={items} />
+        )}
+
+        {!rangeError && !list.loading && !list.error && total > PAGE_SIZE && (
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, alignItems: "center" }}>
+            <span style={{ fontSize: 12, color: T.textSub }}>
+              {page} / {maxPage}
+            </span>
+            <button type="button" className="btn" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+              이전
+            </button>
+            <button type="button" className="btn" disabled={page >= maxPage} onClick={() => setPage((p) => p + 1)}>
+              다음
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
+// ─── [C] 수평 막대 ────────────────────────────────────────────────────────────
+
+function CustomerBars({ rows }: { rows: { customer: string; quantity: number }[] }) {
+  const max = Math.max(...rows.map((r) => r.quantity), 1);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {rows.map((r) => (
+        <div key={r.customer} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: T.text, width: 90, flexShrink: 0 }}>{r.customer}</span>
+          <div style={{ flex: 1, height: 10, background: T.surfaceSubtle, borderRadius: 6, overflow: "hidden" }}>
+            <div
+              style={{
+                width: `${(r.quantity / max) * 100}%`,
+                height: "100%",
+                background: T.primary,
+                borderRadius: 6,
+              }}
+            />
+          </div>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.text, width: 78, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+            {r.quantity.toFixed(1)} kg
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── [D] 월 캘린더 ────────────────────────────────────────────────────────────
+
+function MonthCalendar({
+  month,
+  cells,
+}: {
+  month: string;
+  cells: { date: string; count: number; quantity: number }[];
+}) {
+  const [y, m] = month.split("-").map(Number);
+  const first = new Date(y, m - 1, 1);
+  const daysInMonth = new Date(y, m, 0).getDate();
+  const lead = first.getDay();
+  const byDate = new Map(cells.map((c) => [c.date, c]));
+
+  const slots: (number | null)[] = [
+    ...Array.from({ length: lead }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4, marginBottom: 4 }}>
+        {["일", "월", "화", "수", "목", "금", "토"].map((d) => (
+          <div key={d} style={{ fontSize: 10.5, fontWeight: 600, color: T.textMuted, textAlign: "center" }}>
+            {d}
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 4 }}>
+        {slots.map((day, i) => {
+          if (day === null) return <div key={`pad-${i}`} />;
+          const key = `${month}-${String(day).padStart(2, "0")}`;
+          const cell = byDate.get(key);
+          return (
+            <div
+              key={key}
+              style={{
+                minHeight: 44,
+                border: `1px solid ${T.border}`,
+                borderRadius: 6,
+                padding: "3px 5px",
+                background: cell ? "#EEF1FD" : T.surface,
+              }}
+            >
+              <div style={{ fontSize: 10.5, color: T.textMuted, fontVariantNumeric: "tabular-nums" }}>{day}</div>
+              {cell && (
+                <div style={{ fontSize: 10.5, color: T.primary, fontWeight: 700, lineHeight: 1.3 }}>
+                  {cell.count}건
+                  <br />
+                  {cell.quantity.toFixed(0)}kg
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── [E] 목록 표 ──────────────────────────────────────────────────────────────
+
+function ShipmentTable({ rows }: { rows: ShipmentDto[] }) {
+  return (
+    <div style={tableWrapStyle}>
+      <table style={tableStyle}>
+        <thead>
+          <tr style={{ background: T.surfaceSubtle }}>
+            <th style={thStyle}>LOT번호</th>
+            <th style={thStyle}>고객사</th>
+            <th style={thStyle}>제품</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>수량</th>
+            <th style={thStyle}>단위</th>
+            <th style={thStyle}>출하일시</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.id} style={{ borderBottom: `1px solid ${T.border}` }}>
+              <td style={{ ...tdStyle, fontWeight: 600 }}>{r.lot_id}</td>
+              <td style={tdStyle}>{r.customer}</td>
+              <td style={tdStyle}>{r.product}</td>
+              {/* DECIMAL(10,2) — 소수 2자리 고정, 서버 값을 반올림하지 않는다 */}
+              <td style={{ ...tdStyle, textAlign: "right" }}>{r.quantity.toFixed(2)}</td>
+              <td style={tdStyle}>{r.unit}</td>
+              <td style={tdStyle}>{r.shipped_at.replace("T", " ").slice(0, 16)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ─── 스타일 ───────────────────────────────────────────────────────────────────
+
+const labelStyle: React.CSSProperties = { fontSize: 11.5, fontWeight: 600, color: T.textSub };
+
+const inputStyle: React.CSSProperties = {
+  height: 32,
+  padding: "0 8px",
+  border: `1px solid ${T.border}`,
+  borderRadius: 6,
+  fontSize: 12.5,
+  fontFamily: "inherit",
+  outline: "none",
+};
+
+const sectionTitle: React.CSSProperties = {
+  fontSize: 13,
+  fontWeight: 700,
+  color: T.text,
+  marginBottom: 14,
+};
+
+const tableWrapStyle: React.CSSProperties = {
+  overflowX: "auto",
+  borderRadius: 12,
+  border: `1px solid ${T.border}`,
+  background: T.surface,
+  boxShadow: "0 1px 2px rgba(16,24,40,.03)",
+};
+
+const tableStyle: React.CSSProperties = {
+  width: "100%",
+  borderCollapse: "collapse",
+  fontSize: 12.5,
+  fontVariantNumeric: "tabular-nums",
+};
+
+const thStyle: React.CSSProperties = {
+  padding: "10px 14px",
+  textAlign: "left",
+  fontSize: 11.5,
+  fontWeight: 600,
+  color: T.textSub,
+  letterSpacing: "0.03em",
+  borderBottom: `1px solid ${T.border}`,
+  whiteSpace: "nowrap",
+};
+
+const tdStyle: React.CSSProperties = {
+  padding: "10px 14px",
+  color: T.text,
+  whiteSpace: "nowrap",
+};

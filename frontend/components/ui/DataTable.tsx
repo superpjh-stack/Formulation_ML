@@ -37,7 +37,7 @@ export function DataTable<T>({
       style={{
         overflowX: "auto",
         borderRadius: 12,
-        border: "1px solid #E4E7EC",
+        border: "1px solid var(--color-border, #E4E7EC)",
         background: "#fff",
         boxShadow: "0 1px 2px rgba(16,24,40,.03)",
       }}
@@ -70,7 +70,7 @@ export function DataTable<T>({
                   color: "#687182",
                   letterSpacing: "0.03em",
                   textTransform: "uppercase",
-                  borderBottom: "1px solid #E4E7EC",
+                  borderBottom: "1px solid var(--color-border, #E4E7EC)",
                   whiteSpace: "nowrap",
                   width: col.width,
                 }}
@@ -103,7 +103,7 @@ export function DataTable<T>({
                     style={{
                       width: 14,
                       height: 14,
-                      border: "2px solid #E4E7EC",
+                      border: "2px solid var(--color-border, #E4E7EC)",
                       borderTopColor: "#3A5BD9",
                       borderRadius: "50%",
                       animation: "spin 0.7s linear infinite",
@@ -155,7 +155,7 @@ export function DataTable<T>({
                       style={{
                         padding: "10px 14px",
                         textAlign: col.align ?? "left",
-                        color: "#161B26",
+                        color: "var(--color-text, #161B26)",
                         verticalAlign: "middle",
                         width: col.width,
                       }}

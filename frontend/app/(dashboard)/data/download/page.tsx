@@ -1,291 +1,287 @@
 "use client";
 
-import { useState } from "react";
-import { DataTable, Column } from "@/components/ui/DataTable";
+/**
+ * FE-RT-36 — 다운로드 · `/data/download` · FR-DT-04 (필수, CSV/Excel)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-36. 와이어프레임 없음(SF-TD3 §3).
+ * 저장 테이블: `lots`/`components`/`quality`. **501 아님.**
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **서버 생성 방식이다** (§3, 지시 항목).
+ *
+ * api-contract §8.9: *"`/data/export` 는 **유일하게 JSON 이 아닌 응답**이다.
+ * `page_size` 상한(200)을 적용하지 않고 전체를 스트리밍한다. 대신 **최대 10만 행**
+ * 제한을 걸고 초과 시 422."*
+ * → 서버가 파일을 만들어 스트리밍하고 브라우저가 그 응답을 저장한다.
+ *   클라이언트에서 JSON 을 받아 Blob 으로 CSV 를 조립하는 방식이 **아니다**.
+ *
+ * 프론트 구현 규약 (전부 지킴):
+ *   1. **`window.location.href` 나 `<a href>` 직접 링크를 쓰지 않는다** —
+ *      JWT 는 `Authorization: Bearer` 헤더로 나가는데 링크 이동은 헤더를 못 붙인다
+ *   2. `exportData()` → `res.blob()` → `URL.createObjectURL` → 프로그램적 `<a download>`
+ *      클릭 → `URL.revokeObjectURL()`
+ *   3. 파일명은 **서버 `Content-Disposition` 에서 파싱**한다 (`exportData()` 가 처리).
+ *      프론트가 파일명을 지어내지 않는다
+ *   4. `format=xlsx` — UI 라벨은 "Excel", 쿼리 값은 `xlsx`
+ *   5. 진행 표시는 요청 시작~응답 완료까지의 **실제 상태**다. 가짜 지연 금지
+ *   6. **이 요청만 타임아웃이 없다** — 대용량 스트리밍이라 10초를 넘길 수 있다
+ *
+ * 라운드 2 에서 지운 것:
+ *   - 가짜 지연 타이머 2회로 "다운로드중 → 완료" 를 연출하던 것.
+ *     **파일이 실제로 생성되지 않았다**
+ *   - 데이터셋 카드 5개 하드코딩 (성분분석/입고이력/품질검사/공정실적/AI학습용)
+ *     → `entity` 3종 **단일 폼**
+ *   - `ZIP` 형식 — 계약 `format` 에 `zip` 이 없다
+ *   - 파일 크기·건수·기간·업데이트 시각 하드코딩(`"2.3 MB"` 등) — 응답 필드가 없다
+ *   - 다운로드 이력 7건 + 사용자명 — 이력 엔드포인트가 없고
+ *     `audit_logs` 는 GET 을 기록하지 않는다 (api-contract §6.2)
+ *   - 안내 문구 *"민감 데이터는 접근 권한에 따라 제한될 수 있습니다"* —
+ *     **계약에 엔티티별 권한 차등 규정이 없다.** 근거 없는 문구다
+ *
+ * 신설: 기간·공급사 필터 · 예상 행 수 · 10만 행 상한 이중 방어.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+import { useCallback, useMemo, useState } from "react";
+import { exportData, getDataQuery, getSuppliers } from "@/lib/koryo-api";
+import type { ExportFormat, QueryEntity } from "@/types/api";
+import { T } from "@/components/ui/tokens";
+import {
+  DateInput,
+  Field,
+  FilterBar,
+  InlineError,
+  PageHeader,
+  PageShell,
+  Section,
+  Select,
+} from "../../_g1/ui";
+import { Chips, Notice, errText, useApi } from "../../_g3/ui";
 
-type FileFormat = "CSV" | "Excel" | "ZIP";
-type DownloadStatus = "대기" | "다운로드중" | "완료";
-
-interface Dataset {
-  id: string;
-  title: string;
-  description: string;
-  period: string;
-  recordCount: number;
-  formats: FileFormat[];
-  updatedAt: string;
-  sizeMap: Record<FileFormat, string>;
-  icon: string;
-  color: string;
-}
-
-const DATASETS: Dataset[] = [
-  {
-    id: "ds-component",
-    title: "성분분석 이력",
-    description: "ICP-OES 성분분석 전체 이력. SN/AG/CU/PB 실측치, 판정 결과, 공급사 정보 포함.",
-    period: "2023-01-01 ~ 2026-06-27",
-    recordCount: 12480,
-    formats: ["CSV", "Excel"],
-    updatedAt: "2026-06-27 09:00",
-    sizeMap: { CSV: "2.3 MB", Excel: "3.1 MB", ZIP: "" },
-    icon: "A",
-    color: "#3A5BD9",
-  },
-  {
-    id: "ds-purchase",
-    title: "입고 이력 전체",
-    description: "원자재 입고 이력. 원자재별 입고량, 공급사, 단가, 합계 정보 포함.",
-    period: "2023-01-01 ~ 2026-06-27",
-    recordCount: 4830,
-    formats: ["CSV"],
-    updatedAt: "2026-06-27 08:30",
-    sizeMap: { CSV: "1.1 MB", Excel: "", ZIP: "" },
-    icon: "I",
-    color: "#7C3AED",
-  },
-  {
-    id: "ds-quality",
-    title: "품질 검사 결과",
-    description: "LOT별 품질 검사 결과. 품질점수, 검수자, 불량 유형, 판정 데이터.",
-    period: "2023-06-01 ~ 2026-06-27",
-    recordCount: 8210,
-    formats: ["Excel"],
-    updatedAt: "2026-06-27 10:15",
-    sizeMap: { CSV: "", Excel: "890 KB", ZIP: "" },
-    icon: "Q",
-    color: "#16A34A",
-  },
-  {
-    id: "ds-process",
-    title: "공정 실적 데이터",
-    description: "라인별 생산 실적. 계획/실적 수량, 공정 온도, 용융 시간, 달성률 포함.",
-    period: "2024-01-01 ~ 2026-06-27",
-    recordCount: 23150,
-    formats: ["CSV"],
-    updatedAt: "2026-06-27 07:45",
-    sizeMap: { CSV: "3.2 MB", Excel: "", ZIP: "" },
-    icon: "P",
-    color: "#D97706",
-  },
-  {
-    id: "ds-ai-train",
-    title: "AI 학습용 데이터셋",
-    description: "ML 모델 학습에 최적화된 전처리 완료 데이터. 피처 엔지니어링, 정규화, 결측치 처리 적용.",
-    period: "2023-01-01 ~ 2026-05-31",
-    recordCount: 48320,
-    formats: ["ZIP"],
-    updatedAt: "2026-06-01 06:00",
-    sizeMap: { CSV: "", Excel: "", ZIP: "8.5 MB" },
-    icon: "ML",
-    color: "#0E7490",
-  },
+/** api-contract §8.9 — `/data/query` 와 동일한 화이트리스트 */
+const ENTITIES: { value: QueryEntity; label: string }[] = [
+  { value: "lots", label: "LOT" },
+  { value: "components", label: "성분" },
+  { value: "quality", label: "품질" },
 ];
 
-interface DownloadLog {
-  id: string;
-  user: string;
-  filename: string;
-  format: FileFormat;
-  datetime: string;
-  size: string;
-}
+/** 서버 상한. 초과 시 422 를 준다 — 프론트는 버튼을 먼저 막는다 (이중 방어) */
+const MAX_ROWS = 100_000;
 
-const MOCK_LOGS: DownloadLog[] = [
-  { id: "DL-001", user: "김민준",  filename: "성분분석_이력_2026-06-27.csv",        format: "CSV",   datetime: "2026-06-27 14:30", size: "2.3 MB" },
-  { id: "DL-002", user: "이서연",  filename: "품질검사_결과_2026-06-27.xlsx",        format: "Excel", datetime: "2026-06-27 13:15", size: "890 KB" },
-  { id: "DL-003", user: "박지훈",  filename: "AI학습용_데이터셋_2026-06-01.zip",    format: "ZIP",   datetime: "2026-06-27 11:00", size: "8.5 MB" },
-  { id: "DL-004", user: "김민준",  filename: "공정실적_데이터_2026-06-27.csv",       format: "CSV",   datetime: "2026-06-27 09:22", size: "3.2 MB" },
-  { id: "DL-005", user: "이서연",  filename: "입고이력_전체_2026-06-27.csv",         format: "CSV",   datetime: "2026-06-26 16:40", size: "1.1 MB" },
-  { id: "DL-006", user: "최영수",  filename: "성분분석_이력_2026-06-26.xlsx",        format: "Excel", datetime: "2026-06-26 14:05", size: "3.1 MB" },
-  { id: "DL-007", user: "박지훈",  filename: "품질검사_결과_2026-06-26.xlsx",        format: "Excel", datetime: "2026-06-26 10:30", size: "890 KB" },
-];
-
-const FORMAT_STYLES: Record<FileFormat, { color: string; bg: string }> = {
-  CSV:   { color: "#16A34A", bg: "#ECFDF3" },
-  Excel: { color: "#1D4ED8", bg: "#EEF4FF" },
-  ZIP:   { color: "#7C3AED", bg: "#F5F3FF" },
-};
-
-const LOG_COLUMNS: Column<DownloadLog>[] = [
-  { key: "datetime", header: "다운로드 시각",  width: 150, render: (v) => <span style={{ fontVariantNumeric: "tabular-nums", fontSize: 12.5 }}>{v as string}</span> },
-  { key: "user",     header: "사용자",         width: 90  },
-  { key: "filename", header: "파일명",         render: (v) => <span style={{ fontSize: 12.5, color: "#161B26" }}>{v as string}</span> },
-  { key: "format",   header: "형식",           width: 70, align: "center",
-    render: (v) => {
-      const fmt = v as FileFormat;
-      const s = FORMAT_STYLES[fmt];
-      return <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 20, color: s.color, background: s.bg }}>{fmt}</span>;
-    } },
-  { key: "size", header: "크기", width: 80, align: "right",
-    render: (v) => <span style={{ fontSize: 12.5, fontVariantNumeric: "tabular-nums" }}>{v as string}</span> },
-];
-
-// ─── Dataset Card ─────────────────────────────────────────────────────────────
-
-function DatasetCard({ dataset }: { dataset: Dataset }) {
-  const [selectedFormat, setSelectedFormat] = useState<FileFormat>(dataset.formats[0]);
-  const [dlStatus, setDlStatus] = useState<DownloadStatus>("대기");
-
-  function handleDownload() {
-    setDlStatus("다운로드중");
-    setTimeout(() => setDlStatus("완료"), 1800);
-    setTimeout(() => setDlStatus("대기"), 4000);
-  }
-
-  const size = dataset.sizeMap[selectedFormat];
-
-  return (
-    <div className="card" style={{
-      display: "flex", flexDirection: "column", gap: 14,
-      borderTop: `3px solid ${dataset.color}`,
-    }}>
-      {/* Icon + title */}
-      <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
-        <div style={{
-          width: 42, height: 42, borderRadius: 10, flexShrink: 0,
-          background: `${dataset.color}18`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: dataset.icon.length > 1 ? 11 : 16, fontWeight: 800, color: dataset.color,
-        }}>
-          {dataset.icon}
-        </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: "#161B26", marginBottom: 3 }}>{dataset.title}</div>
-          <div style={{ fontSize: 12, color: "#687182", lineHeight: 1.5 }}>{dataset.description}</div>
-        </div>
-      </div>
-
-      {/* Meta */}
-      <div style={{ display: "flex", gap: 16, fontSize: 11.5, color: "#9AA4B2" }}>
-        <span>기간: <strong style={{ color: "#687182" }}>{dataset.period}</strong></span>
-        <span>건수: <strong style={{ color: "#687182", fontVariantNumeric: "tabular-nums" }}>{dataset.recordCount.toLocaleString()}건</strong></span>
-        <span>업데이트: <strong style={{ color: "#687182" }}>{dataset.updatedAt}</strong></span>
-      </div>
-
-      {/* Format + download */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4, borderTop: "1px solid #F2F4F7" }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {dataset.formats.map((f) => {
-            const active = selectedFormat === f;
-            const fs = FORMAT_STYLES[f];
-            return (
-              <button
-                key={f}
-                onClick={() => setSelectedFormat(f)}
-                style={{
-                  padding: "4px 12px", fontSize: 11.5, fontWeight: 700, borderRadius: 20,
-                  border: active ? "none" : "1px solid #E4E7EC",
-                  background: active ? fs.color : "#F8F9FB",
-                  color: active ? "#fff" : "#687182",
-                  cursor: "pointer", transition: "all 0.15s",
-                }}
-              >
-                {f}
-              </button>
-            );
-          })}
-        </div>
-        <span style={{ fontSize: 11.5, color: "#9AA4B2", flex: 1 }}>{size}</span>
-        <button
-          onClick={handleDownload}
-          disabled={dlStatus === "다운로드중"}
-          style={{
-            padding: "6px 18px", fontSize: 12.5, fontWeight: 700, borderRadius: 8,
-            border: "none",
-            background: dlStatus === "완료" ? "#16A34A" : dlStatus === "다운로드중" ? "#9AA4B2" : dataset.color,
-            color: "#fff", cursor: dlStatus === "다운로드중" ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", gap: 6, transition: "background 0.2s",
-          }}
-        >
-          {dlStatus === "다운로드중" ? (
-            <>
-              <span style={{
-                width: 11, height: 11, border: "2px solid rgba(255,255,255,0.4)",
-                borderTopColor: "#fff", borderRadius: "50%", animation: "spin 0.7s linear infinite",
-                display: "inline-block",
-              }} />
-              다운로드 중...
-            </>
-          ) : dlStatus === "완료" ? (
-            <>✓ 완료</>
-          ) : (
-            <>↓ 다운로드</>
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
+type Progress = "idle" | "running" | "done" | "failed";
 
 export default function DataDownloadPage() {
-  const totalDownloads = MOCK_LOGS.length;
-  const todayDownloads = MOCK_LOGS.filter((l) => l.datetime.startsWith("2026-06-27")).length;
-  const totalSize      = "16.9 MB";
+  const [entity, setEntity] = useState<QueryEntity>("lots");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [supplier, setSupplier] = useState("");
+  const [format, setFormat] = useState<ExportFormat>("csv");
+
+  const [progress, setProgress] = useState<Progress>("idle");
+  const [notice, setNotice] = useState<{ tone: "ok" | "warn" | "error"; text: string } | null>(
+    null
+  );
+
+  const suppliers = useApi(() => getSuppliers(true), []);
+
+  const supplierOptions = useMemo(
+    () => [
+      { value: "", label: "전체" },
+      ...(suppliers.data?.items ?? []).map((s) => ({
+        value: s.code,
+        label: `${s.code} · ${s.name}`,
+      })),
+    ],
+    [suppliers.data]
+  );
+
+  const rangeInverted = dateFrom !== "" && dateTo !== "" && dateFrom > dateTo;
+
+  /**
+   * 예상 행 수 — `GET /data/query?…&page_size=1` 의 `total` 만 쓴다 (§5).
+   * **조용히 실패시키지 않는다** — 행 수 자리에 "—" 와 오류를 함께 보여준다 (§6).
+   */
+  const estimate = useApi(
+    () =>
+      getDataQuery(entity, {
+        page_size: 1,
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        supplier: supplier || undefined,
+      }),
+    [entity, dateFrom, dateTo, supplier],
+    !rangeInverted
+  );
+
+  const rowCount = estimate.data?.total ?? null;
+  const overLimit = rowCount !== null && rowCount > MAX_ROWS;
+  const noRows = rowCount === 0;
+
+  const canExport =
+    progress !== "running" &&
+    !rangeInverted &&
+    !overLimit &&
+    !noRows &&
+    estimate.error === null;
+
+  const run = useCallback(async () => {
+    if (!canExport) return;
+    setProgress("running");
+    setNotice(null);
+    try {
+      // 🔴 인증 헤더가 붙는 실제 요청. 타임아웃 없음 (대용량 스트리밍)
+      const file = await exportData(entity, format, {
+        date_from: dateFrom || undefined,
+        date_to: dateTo || undefined,
+        supplier: supplier || undefined,
+      });
+      const url = URL.createObjectURL(file.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename; // 서버 Content-Disposition 파싱 결과
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setProgress("done");
+      setNotice({ tone: "ok", text: `${file.filename} 을(를) 내려받았습니다.` });
+    } catch (err) {
+      const msg = errText(err);
+      setProgress("failed");
+      setNotice({
+        tone: "error",
+        text: /422/.test(msg)
+          ? `내보낼 수 있는 최대 행 수(${MAX_ROWS.toLocaleString()})를 초과했습니다. 기간을 좁혀 주세요.`
+          : msg,
+      });
+    }
+  }, [canExport, entity, format, dateFrom, dateTo, supplier]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>데이터 다운로드</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>데이터셋 선택 및 파일 다운로드</p>
-      </div>
+    <PageShell>
+      <PageHeader title="데이터 다운로드" subtitle="대상 데이터 선택 및 CSV/Excel 내보내기" />
 
-      {/* Summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        {[
-          { label: "다운로드 가능 데이터셋", value: DATASETS.length, unit: "개",  color: "#3A5BD9" },
-          { label: "오늘 다운로드",           value: todayDownloads,  unit: "건",  color: "#16A34A" },
-          { label: "누적 다운로드",           value: totalDownloads,  unit: "건",  color: "#7C3AED" },
-        ].map((s) => (
-          <div key={s.label} className="card" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: "#687182", letterSpacing: "0.03em", textTransform: "uppercase" as const }}>{s.label}</span>
-            <span style={{ fontSize: 26, fontWeight: 800, color: s.color, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-              {s.value}<span style={{ fontSize: 13, fontWeight: 500, color: "#9AA4B2", marginLeft: 3 }}>{s.unit}</span>
-            </span>
-          </div>
-        ))}
-      </div>
+      {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
 
-      {/* Notice */}
-      <div style={{
-        padding: "12px 16px", background: "#EEF4FF", border: "1px solid #BFDBFE",
-        borderRadius: 10, display: "flex", gap: 10, alignItems: "center",
-      }}>
-        <span style={{ fontSize: 13, color: "#1D4ED8" }}>
-          <strong>총 {totalSize}</strong>의 데이터를 다운로드할 수 있습니다. 민감 데이터는 접근 권한에 따라 제한될 수 있습니다.
-        </span>
-      </div>
-
-      {/* Dataset grid */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 14 }}>다운로드 가능 데이터셋</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
-          {DATASETS.map((ds) => <DatasetCard key={ds.id} dataset={ds} />)}
-        </div>
-      </div>
-
-      {/* Download history */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid #E4E7EC" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>다운로드 이력</span>
-          <span style={{ fontSize: 12, color: "#9AA4B2", marginLeft: 8 }}>최근 {MOCK_LOGS.length}건</span>
-        </div>
-        <DataTable
-          columns={LOG_COLUMNS}
-          data={MOCK_LOGS}
-          rowKey={(r) => r.id}
-          stickyHeader
+      <Section title="내보내기 조건">
+        <Chips
+          value={entity}
+          onChange={(v) => setEntity(v as QueryEntity)}
+          options={ENTITIES}
         />
-      </div>
 
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-      `}</style>
-    </div>
+        <FilterBar>
+          <Field label="기간 시작" htmlFor="dl-from" width={150}>
+            <DateInput
+              id="dl-from"
+              value={dateFrom}
+              onChange={setDateFrom}
+              invalid={rangeInverted}
+            />
+          </Field>
+
+          <Field label="기간 종료" htmlFor="dl-to" width={150}>
+            <DateInput id="dl-to" value={dateTo} onChange={setDateTo} invalid={rangeInverted} />
+          </Field>
+
+          <Field label="공급사" htmlFor="dl-sup" width={190}>
+            <Select
+              id="dl-sup"
+              value={supplier}
+              onChange={setSupplier}
+              options={supplierOptions}
+              disabled={suppliers.loading || suppliers.error !== null}
+              width={190}
+            />
+          </Field>
+
+          <Field label="형식" width={180}>
+            <div style={{ display: "flex", alignItems: "center", gap: 14, height: 34 }}>
+              {(["csv", "xlsx"] as const).map((f) => (
+                <label
+                  key={f}
+                  style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12.5, color: T.text }}
+                >
+                  <input
+                    type="radio"
+                    name="dl-format"
+                    checked={format === f}
+                    onChange={() => setFormat(f)}
+                  />
+                  {f === "csv" ? "CSV" : "Excel"}
+                </label>
+              ))}
+            </div>
+          </Field>
+        </FilterBar>
+
+        {rangeInverted && (
+          <span style={{ fontSize: 11.5, color: T.error }}>종료일이 시작일보다 빠릅니다</span>
+        )}
+        {suppliers.error && <InlineError message={suppliers.error} onRetry={suppliers.refetch} />}
+      </Section>
+
+      <Section title="내보내기">
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 20,
+            flexWrap: "wrap",
+          }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>예상 행 수</span>
+            <strong style={{ fontSize: 22, fontWeight: 700, color: T.text }}>
+              {rangeInverted
+                ? "—"
+                : estimate.loading
+                  ? "…"
+                  : estimate.error
+                    ? "—"
+                    : rowCount !== null
+                      ? `${rowCount.toLocaleString()}건`
+                      : "—"}
+            </strong>
+            {estimate.error && (
+              <span
+                style={{ fontSize: 11.5, color: T.error, maxWidth: 320, lineHeight: 1.5 }}
+                title={estimate.error}
+              >
+                행 수를 확인하지 못했습니다 — {estimate.error}
+              </span>
+            )}
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!canExport}
+            onClick={() => void run()}
+            style={{ height: 38, minWidth: 120 }}
+          >
+            {progress === "running" ? "생성 중…" : "내보내기"}
+          </button>
+        </div>
+
+        {overLimit && (
+          <Notice tone="warn">
+            예상 행 수가 상한({MAX_ROWS.toLocaleString()}건)을 초과했습니다. 기간이나 공급사를
+            좁혀 주세요.
+          </Notice>
+        )}
+        {noRows && !estimate.loading && (
+          <Notice tone="warn">조건에 맞는 데이터가 없습니다.</Notice>
+        )}
+
+        <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+          ⓘ 파일은 서버가 생성해 스트리밍합니다. 대용량일 수 있어 이 요청에는 타임아웃을 두지
+          않으며, 생성 중 취소는 지원하지 않습니다 (서버 중단 계약이 없습니다). 다운로드 이력은
+          기록되지 않습니다 — 조회(GET)는 감사 로그 대상이 아닙니다.
+        </span>
+      </Section>
+    </PageShell>
   );
 }

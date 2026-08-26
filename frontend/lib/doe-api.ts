@@ -11,13 +11,47 @@ import type {
   OptimizeResponse,
 } from "@/types/doe";
 
-const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+import { authHeaders, redirectToLogin } from "./auth";
+
+/** 상대경로 + Next rewrite 경유 — `api-contract.md` §1.2 · `ts-types.md` §8 #11 */
+const BASE_URL = process.env.NEXT_PUBLIC_API_URL ?? "";
+/** DOE 7종은 `/api/v1/doe/*` 아래로 이동했다 (api-contract §8.11 G11) */
+const API_PREFIX = "/api/v1";
+const REQUEST_TIMEOUT_MS = 10_000;
+
+function timeoutSignal(): AbortSignal | undefined {
+  if (typeof AbortSignal === "undefined" || typeof AbortSignal.timeout !== "function") {
+    return undefined;
+  }
+  return AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+}
 
 async function doeFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json", ...options.headers },
-    ...options,
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE_URL}${API_PREFIX}${path}`, {
+      signal: timeoutSignal(),
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+        ...options.headers,
+      },
+    });
+  } catch (err) {
+    const aborted =
+      err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+    throw new ApiError(
+      0,
+      aborted
+        ? `서버 응답이 없습니다 (${path} — ${REQUEST_TIMEOUT_MS / 1000}초 초과)`
+        : `서버에 연결할 수 없습니다 (${path})`
+    );
+  }
+  if (res.status === 401) {
+    redirectToLogin();
+    throw new ApiError(401, await res.text().catch(() => res.statusText));
+  }
   if (!res.ok) {
     const detail = await res.text().catch(() => res.statusText);
     throw new ApiError(res.status, detail);

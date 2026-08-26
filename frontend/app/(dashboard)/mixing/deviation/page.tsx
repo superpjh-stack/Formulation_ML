@@ -1,399 +1,371 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+/**
+ * FE-RT-12 — 성분 편차 분석 · `/mixing/deviation` · FR-M-02
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-12 · 와이어프레임 **SF-TD3 §3.4** (그대로 따른다) ·
+ * 계약 `api-contract.md` §8.4 · §8.4.3.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - 🚨 **경고 임계의 차원 오류.** 현 구현은 `WARN_PCT = 5` / `CAUTION_PCT = 3` 을
+ *     **목표값 대비 상대 %** 로 계산했다. 계약 정본은 **절대 편차**다.
+ *     상대 5% 는 Ag 에서 `±0.15`(계약 `0.3` 의 절반), Cu 에서 `±0.025`(계약 `0.1` 의 1/4)라
+ *     **화면은 정상으로 보이면서 경고 판정만 조용히 틀렸다.** 두 상수를 전부 삭제하고
+ *     응답의 `warn_threshold` 를 쓴다 — TSX 에 임계값 숫자가 없다.
+ *   - 🚨 **공급사별 편차 비교표 + 권장 공급사 신규 구현.** SF-TD3 §3.4 의 핵심 요소인데
+ *     통째로 빠져 있었다 (와이어프레임 대비 결손이 가장 컸다).
+ *   - 차트 1개(SN/AG/CU 중첩, **CU 를 ×10 배율**로 왜곡) → **성분별 독립 차트 3개**.
+ *     임의 배율은 데이터 왜곡이다 — 성분별 Y축 분리로 해결한다.
+ *   - `MOCK_LOTS`(15행) · `TREND_DATA`(3×30) · `STAT_CARDS` · 로컬 캔버스 차트 제거
+ *   - LOT별 편차 상세 표 제거 — SF-TD3·계약 어디에도 없다. LOT별 성분은 **FE-RT-08** 소관이다
+ *   - **공급사 필터 제거** — `ISS-002` 는 v1.1 범위 밖이고 §8.4.3 이 `?supplier=` 를 금지한다
+ *   - 기간 기본값 30일 → **90일** (SF-TD3 §3.4 제목이 "(최근 90일)")
+ *   - 프론트 `value - target` 뺄셈 제거 → 서버 `points[].deviation`
+ *   - 로컬 `SN_TARGET`/`AG_TARGET`/`CU_TARGET` 재정의 제거 → 응답 `target`
+ */
+
+import { useMemo, useState } from "react";
+import { TrendChart } from "@/components/charts/TrendChart";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { DataTable, Column } from "@/components/ui/DataTable";
+import { T } from "@/components/ui/tokens";
+import {
+  useDeviationBySupplier,
+  useDeviationTimeseries,
+  usePublicSettings,
+} from "@/hooks/useKoryoData";
+import type { DeviationComponent } from "@/lib/koryo-api";
+import type { DeviationTimeseriesDto } from "@/types/api";
+import type { HookState } from "@/hooks/useKoryoData";
+import {
+  DASH,
+  Field,
+  FilterBar,
+  PageHeader,
+  PageShell,
+  Section,
+  SectionState,
+  Select,
+  SettingsFallbackBanner,
+  num,
+} from "../../_g1/ui";
 
-const SN_TARGET = 62.0;
-const AG_TARGET = 3.0;
-const CU_TARGET = 0.5;
-const WARN_PCT = 5;
-const CAUTION_PCT = 3;
-
-// ── Mock data ──────────────────────────────────────────────────────────────
-
-interface LotRow {
-  lot: string;
-  date: string;
-  sn_actual: number;
-  sn_dev: number;
-  ag_actual: number;
-  ag_dev: number;
-  cu_actual: number;
-  cu_dev: number;
-  verdict: "정상" | "주의" | "경고";
-}
-
-const MOCK_LOTS: LotRow[] = [
-  { lot: "LOT-2026-0601", date: "2026-06-01", sn_actual: 62.3, sn_dev: 0.3, ag_actual: 2.95, ag_dev: -0.05, cu_actual: 0.51, cu_dev: 0.01, verdict: "정상" },
-  { lot: "LOT-2026-0602", date: "2026-06-02", sn_actual: 61.8, sn_dev: -0.2, ag_actual: 3.05, ag_dev: 0.05, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
-  { lot: "LOT-2026-0603", date: "2026-06-03", sn_actual: 63.1, sn_dev: 1.1, ag_actual: 2.88, ag_dev: -0.12, cu_actual: 0.52, cu_dev: 0.02, verdict: "정상" },
-  { lot: "LOT-2026-0604", date: "2026-06-04", sn_actual: 63.8, sn_dev: 1.8, ag_actual: 2.80, ag_dev: -0.20, cu_actual: 0.53, cu_dev: 0.03, verdict: "주의" },
-  { lot: "LOT-2026-0605", date: "2026-06-05", sn_actual: 62.1, sn_dev: 0.1, ag_actual: 3.10, ag_dev: 0.10, cu_actual: 0.49, cu_dev: -0.01, verdict: "정상" },
-  { lot: "LOT-2026-0606", date: "2026-06-06", sn_actual: 61.5, sn_dev: -0.5, ag_actual: 3.20, ag_dev: 0.20, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
-  { lot: "LOT-2026-0607", date: "2026-06-07", sn_actual: 64.1, sn_dev: 2.1, ag_actual: 2.75, ag_dev: -0.25, cu_actual: 0.55, cu_dev: 0.05, verdict: "주의" },
-  { lot: "LOT-2026-0608", date: "2026-06-08", sn_actual: 62.5, sn_dev: 0.5, ag_actual: 3.00, ag_dev: 0.00, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
-  { lot: "LOT-2026-0609", date: "2026-06-09", sn_actual: 65.1, sn_dev: 3.1, ag_actual: 2.65, ag_dev: -0.35, cu_actual: 0.58, cu_dev: 0.08, verdict: "경고" },
-  { lot: "LOT-2026-0610", date: "2026-06-10", sn_actual: 61.9, sn_dev: -0.1, ag_actual: 3.08, ag_dev: 0.08, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
-  { lot: "LOT-2026-0611", date: "2026-06-11", sn_actual: 62.8, sn_dev: 0.8, ag_actual: 2.92, ag_dev: -0.08, cu_actual: 0.51, cu_dev: 0.01, verdict: "정상" },
-  { lot: "LOT-2026-0612", date: "2026-06-12", sn_actual: 62.0, sn_dev: 0.0, ag_actual: 3.02, ag_dev: 0.02, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
-  { lot: "LOT-2026-0613", date: "2026-06-13", sn_actual: 63.4, sn_dev: 1.4, ag_actual: 2.82, ag_dev: -0.18, cu_actual: 0.52, cu_dev: 0.02, verdict: "정상" },
-  { lot: "LOT-2026-0614", date: "2026-06-14", sn_actual: 61.6, sn_dev: -0.4, ag_actual: 3.15, ag_dev: 0.15, cu_actual: 0.49, cu_dev: -0.01, verdict: "정상" },
-  { lot: "LOT-2026-0615", date: "2026-06-15", sn_actual: 62.2, sn_dev: 0.2, ag_actual: 2.98, ag_dev: -0.02, cu_actual: 0.50, cu_dev: 0.00, verdict: "정상" },
+/**
+ * 기간 옵션. SF-TD3 §3.4 제목이 "(최근 90일)" 이고 계약도 `?days=90` 이라 **90 이 정본**이다.
+ * 30 은 화면에서 좁혀 보기 위한 보조 선택지다 (판단).
+ */
+const PERIOD_OPTIONS = [
+  { value: "30", label: "최근 30일" },
+  { value: "90", label: "최근 90일" },
 ];
 
-// 30-day sparkline data for each element
-const TREND_DATA = {
-  sn: [0.3, -0.2, 1.1, 1.8, 0.1, -0.5, 2.1, 0.5, 3.1, -0.1, 0.8, 0.0, 1.4, -0.4, 0.2, 0.6, -0.3, 1.2, 0.9, -0.6, 1.5, 0.4, -0.8, 1.1, 0.7, -0.2, 0.5, 1.8, 0.3, 0.1],
-  ag: [-0.05, 0.05, -0.12, -0.20, 0.10, 0.20, -0.25, 0.00, -0.35, 0.08, -0.08, 0.02, -0.18, 0.15, -0.02, 0.12, -0.10, 0.05, -0.22, 0.18, -0.08, 0.03, 0.22, -0.15, 0.07, -0.03, 0.10, -0.20, 0.05, -0.01],
-  cu: [0.01, 0.00, 0.02, 0.03, -0.01, 0.00, 0.05, 0.00, 0.08, 0.00, 0.01, 0.00, 0.02, -0.01, 0.00, 0.01, -0.02, 0.03, 0.00, -0.01, 0.04, 0.01, -0.02, 0.02, 0.00, 0.01, -0.01, 0.03, 0.01, 0.00],
-};
+/** 성분별 표시 소수자리 — SF-TD3 §3.4 표기를 따랐다 */
+const CHART_DIGITS: Record<DeviationComponent, number> = { sn: 2, ag: 3, cu: 3 };
+/** 비교표 셀 소수자리 — SF-TD3 §3.4 의 `±0.8%` / `±0.12%` / `±0.03%` */
+const TABLE_DIGITS: Record<DeviationComponent, number> = { sn: 1, ag: 2, cu: 2 };
 
-function TrendChart({
-  snData,
-  agData,
-  cuData,
+const COMPONENT_LABEL: Record<DeviationComponent, string> = { sn: "Sn", ag: "Ag", cu: "Cu" };
+
+const COMPONENTS: DeviationComponent[] = ["sn", "ag", "cu"];
+
+// ══════════════════════════════════════════════════════════════════════════════
+// 편차 추이 차트 — Y축은 `deviation` 이다 (실측값이 아니다)
+// ══════════════════════════════════════════════════════════════════════════════
+
+function DeviationChart({
+  component,
+  state,
+  height,
 }: {
-  snData: number[];
-  agData: number[];
-  cuData: number[];
+  component: DeviationComponent;
+  state: HookState<DeviationTimeseriesDto>;
+  height: number;
 }) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const { data, loading, error, refetch } = state;
+  const digits = CHART_DIGITS[component];
+  const label = COMPONENT_LABEL[component];
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth || 600;
-    const H = 200;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
-
-    const padL = 40;
-    const padR = 20;
-    const padT = 20;
-    const padB = 30;
-    const chartW = W - padL - padR;
-    const chartH = H - padT - padB;
-
-    const allVals = [...snData, ...agData];
-    const minV = Math.min(...allVals) - 0.5;
-    const maxV = Math.max(...allVals) + 0.5;
-    const range = maxV - minV || 1;
-
-    const px = (i: number) => padL + (i / (snData.length - 1)) * chartW;
-    const py = (v: number) => padT + chartH - ((v - minV) / range) * chartH;
-
-    // Grid lines
-    for (let g = 0; g <= 4; g++) {
-      const y = padT + (g / 4) * chartH;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(padL + chartW, y);
-      ctx.strokeStyle = "#F2F4F7";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      const val = maxV - (g / 4) * range;
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = "10px -apple-system, sans-serif";
-      ctx.textAlign = "right";
-      ctx.fillText(val.toFixed(1), padL - 6, y + 3);
-    }
-
-    // Warning threshold lines ±5%
-    const warnY5pos = py(0.15); // ~5% of 3.0 SN scale
-    const warnY5neg = py(-0.15);
-    [warnY5pos, warnY5neg].forEach((wy) => {
-      ctx.save();
-      ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(padL, wy);
-      ctx.lineTo(padL + chartW, wy);
-      ctx.strokeStyle = "#FCA5A5";
-      ctx.lineWidth = 1;
-      ctx.stroke();
-      ctx.restore();
-    });
-    ctx.fillStyle = "#FCA5A5";
-    ctx.font = "9px -apple-system, sans-serif";
-    ctx.textAlign = "left";
-    ctx.fillText("경고 ±5%", padL + 4, warnY5pos - 3);
-
-    // Draw lines
-    const series = [
-      { data: snData, color: "#3A5BD9", label: "SN" },
-      { data: agData, color: "#16A34A", label: "AG" },
-      { data: cuData.map((v) => v * 10), color: "#D97706", label: "CU×10" },
-    ];
-
-    series.forEach(({ data, color }) => {
-      ctx.beginPath();
-      data.forEach((v, i) => {
-        const x = px(i);
-        const y = py(v);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      // Last point dot
-      const lastX = px(data.length - 1);
-      const lastY = py(data[data.length - 1]);
-      ctx.beginPath();
-      ctx.arc(lastX, lastY, 3, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.fill();
-    });
-
-    // X axis labels (every 5 days)
-    ctx.fillStyle = "#9AA4B2";
-    ctx.font = "10px -apple-system, sans-serif";
-    ctx.textAlign = "center";
-    for (let i = 0; i < snData.length; i += 5) {
-      ctx.fillText(`${i + 1}일`, px(i), H - 8);
-    }
-  }, [snData, agData, cuData]);
+  const view = useMemo(() => {
+    if (!data) return null;
+    const warn = data.warn_threshold;
+    return {
+      categories: data.points.map((p) => p.date),
+      values: data.points.map((p) => p.deviation),
+      // 임계 초과 점만 Error 색 마커로 강조한다. 임계값은 응답에서 왔다.
+      pointColors: data.points.map((p) =>
+        Math.abs(p.deviation) > warn ? ("error" as const) : undefined
+      ),
+      warn,
+      target: data.target,
+      empty: data.points.length === 0,
+    };
+  }, [data]);
 
   return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: "100%", height: 200, display: "block" }}
-    />
+    <Section
+      title={
+        <h2 style={{ fontSize: 15, fontWeight: 600, color: T.text, margin: 0 }}>
+          {label} 편차 추이{" "}
+          <span style={{ fontSize: 12.5, fontWeight: 500, color: T.textSub }}>
+            (목표: {view ? num(view.target, 1) : DASH}%)
+          </span>
+        </h2>
+      }
+      right={
+        view && (
+          <span style={{ fontSize: 11.5, color: T.textMuted }}>
+            경고 임계 ±{num(view.warn, digits)}%
+          </span>
+        )
+      }
+    >
+      <SectionState
+        loading={loading}
+        error={error}
+        empty={view?.empty ?? false}
+        emptyText="해당 기간 편차 데이터가 없습니다"
+        onRetry={refetch}
+        minHeight={height}
+      >
+        {view && (
+          <TrendChart
+            categories={view.categories}
+            series={[
+              {
+                name: `${label} 편차`,
+                values: view.values,
+                color: "primary",
+                area: false,
+                pointColors: view.pointColors,
+              },
+            ]}
+            height={height}
+            dots="auto"
+            // 0% 기준선 + ±warn_threshold 점선 2개 — 값은 전부 응답에서 온다
+            references={[
+              { value: 0, label: "기준선 0%", color: "textSub" },
+              { value: view.warn, label: `+${num(view.warn, digits)}%`, color: "error" },
+              { value: -view.warn, label: `-${num(view.warn, digits)}%`, color: "error" },
+            ]}
+            formatY={(v) => v.toFixed(digits)}
+            formatX={(d) => d.slice(5)}
+            ariaLabel={`${label} 편차 추이`}
+          />
+        )}
+      </SectionState>
+    </Section>
   );
 }
 
-interface StatCard {
-  label: string;
-  element: string;
-  avgDev: number;
-  maxDev: number;
-  warnCount: number;
-  unit: string;
-  color: string;
-}
-
-const STAT_CARDS: StatCard[] = [
-  { label: "SN (주석)", element: "SN", avgDev: 0.3, maxDev: 1.8, warnCount: 2, unit: "%", color: "#3A5BD9" },
-  { label: "AG (은)", element: "AG", avgDev: -0.1, maxDev: -0.8, warnCount: 0, unit: "%", color: "#16A34A" },
-  { label: "CU (구리)", element: "CU", avgDev: 0.05, maxDev: 0.2, warnCount: 0, unit: "%", color: "#D97706" },
-];
-
-function DevCell({ value, target }: { value: number; target: number }) {
-  const dev = value - target;
-  const pctDev = (dev / target) * 100;
-  const isWarn = Math.abs(pctDev) >= WARN_PCT;
-  const isCaution = !isWarn && Math.abs(pctDev) >= CAUTION_PCT;
-  const color = isWarn ? "#DC2626" : isCaution ? "#D97706" : "#161B26";
-  return (
-    <span style={{ color, fontWeight: isWarn || isCaution ? 700 : 400, fontVariantNumeric: "tabular-nums" }}>
-      {dev > 0 ? "+" : ""}{dev.toFixed(3)}%
-    </span>
-  );
-}
-
-const COLUMNS: Column<LotRow>[] = [
-  { key: "lot",       header: "LOT번호",    width: 160 },
-  { key: "date",      header: "측정일",      width: 110 },
-  { key: "sn_actual", header: "SN 실측",    width: 90,  align: "right",
-    render: (_, r) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.sn_actual.toFixed(2)}%</span> },
-  { key: "sn_dev",    header: "SN 편차",    width: 90,  align: "right",
-    render: (_, r) => <DevCell value={r.sn_actual} target={SN_TARGET} /> },
-  { key: "ag_actual", header: "AG 실측",    width: 90,  align: "right",
-    render: (_, r) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.ag_actual.toFixed(3)}%</span> },
-  { key: "ag_dev",    header: "AG 편차",    width: 90,  align: "right",
-    render: (_, r) => <DevCell value={r.ag_actual} target={AG_TARGET} /> },
-  { key: "cu_actual", header: "CU 실측",    width: 90,  align: "right",
-    render: (_, r) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{r.cu_actual.toFixed(3)}%</span> },
-  { key: "cu_dev",    header: "CU 편차",    width: 90,  align: "right",
-    render: (_, r) => <DevCell value={r.cu_actual} target={CU_TARGET} /> },
-  { key: "verdict",   header: "판정",        width: 80,  align: "center",
-    render: (_, r) => (
-      <StatusBadge
-        variant={r.verdict === "정상" ? "green" : r.verdict === "주의" ? "amber" : "red"}
-        label={r.verdict}
-        dot
-      />
-    ),
-  },
-];
+// ══════════════════════════════════════════════════════════════════════════════
+// 페이지
+// ══════════════════════════════════════════════════════════════════════════════
 
 export default function DeviationPage() {
-  const [period, setPeriod] = useState("30일");
-  const [supplier, setSupplier] = useState("전체");
-  const [element, setElement] = useState("전체");
+  const settings = usePublicSettings();
+  const [days, setDays] = useState(90);
 
-  const filtered = MOCK_LOTS.filter((r) => {
-    if (element === "전체") return true;
-    if (element === "SN") return Math.abs(r.sn_dev / SN_TARGET * 100) >= CAUTION_PCT;
-    if (element === "AG") return Math.abs(r.ag_dev / AG_TARGET * 100) >= CAUTION_PCT;
-    if (element === "CU") return Math.abs(r.cu_dev / CU_TARGET * 100) >= CAUTION_PCT;
-    return true;
-  });
+  // 네 요청은 서로 독립적인 훅이라 **병렬로 나간다.** 순차 await 로 묶지 않는다 (NFR-P-01).
+  const sn = useDeviationTimeseries("sn", days);
+  const ag = useDeviationTimeseries("ag", days);
+  const cu = useDeviationTimeseries("cu", days);
+  const bySupplier = useDeviationBySupplier(days);
+
+  const seriesState: Record<DeviationComponent, HookState<DeviationTimeseriesDto>> = {
+    sn,
+    ag,
+    cu,
+  };
+
+  /** `기준:` 표시는 세 응답의 `target` 에서 온다 — 화면에 62.0/3.0/0.5 를 쓰지 않는다 */
+  const targets = COMPONENTS.map((c) => ({
+    label: COMPONENT_LABEL[c],
+    target: seriesState[c].data?.target,
+  }));
+
+  const suppliers = bySupplier.data?.suppliers ?? [];
+  const recommended = bySupplier.data?.recommended ?? null;
+  const basis = bySupplier.data?.basis ?? "";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0, lineHeight: 1.3 }}>
-          성분편차 분석
-        </h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-          목표값 대비 실측 성분 편차 추이 및 LOT별 상세 현황
-        </p>
+    <PageShell>
+      <PageHeader
+        title={`성분 편차 분석 (최근 ${days}일)`}
+        subtitle="공급사별 Sn/Ag/Cu 편차 시계열 분석 — 목표값 대비 편차 시각화 (FR-M-02)"
+      />
+
+      <SettingsFallbackBanner settings={settings.data} />
+
+      <FilterBar>
+        <Field label="기간" htmlFor="f-days" width={150}>
+          <Select
+            id="f-days"
+            value={String(days)}
+            onChange={(v) => setDays(Number(v))}
+            options={PERIOD_OPTIONS}
+            width={150}
+          />
+        </Field>
+        <span style={{ marginLeft: "auto", fontSize: 11.5, color: T.textMuted, alignSelf: "center" }}>
+          기준:{" "}
+          {targets.map(({ label, target }, i) => (
+            <span key={label}>
+              {i > 0 ? " / " : ""}
+              {label} {num(target, 1)}%
+            </span>
+          ))}
+        </span>
+      </FilterBar>
+
+      {/* Sn — 대형 차트 (SF-TD3 §3.4 전폭) */}
+      <DeviationChart component="sn" state={sn} height={260} />
+
+      {/* Ag · Cu — 소형 차트 2열 (SF-TD3 §3.4 "(소형 차트)") */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+        <DeviationChart component="ag" state={ag} height={180} />
+        <DeviationChart component="cu" state={cu} height={180} />
       </div>
 
-      {/* Filters */}
-      <div className="card" style={{ padding: "12px 16px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: "#687182" }}>필터</span>
-          {[
-            { label: "기간", value: period, setter: setPeriod, options: ["7일", "30일", "90일"] },
-            { label: "공급사", value: supplier, setter: setSupplier, options: ["전체", "SUP_A", "SUP_B", "SUP_C", "SUP_D"] },
-            { label: "성분", value: element, setter: setElement, options: ["전체", "SN", "AG", "CU"] },
-          ].map(({ label, value, setter, options }) => (
-            <div key={label} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 12, color: "#9AA4B2" }}>{label}</span>
-              <select
-                value={value}
-                onChange={(e) => setter(e.target.value)}
+      {/* 공급사별 성분 편차 비교 — SF-TD3 §3.4 는 행=성분, 열=공급사 방향이다 */}
+      <Section
+        title="공급사별 성분 편차 비교"
+        right={
+          <span style={{ fontSize: 11.5, color: T.textMuted }}>
+            값은 <strong style={{ color: T.textSub }}>표준편차(σ)</strong> · ← 편차 작을수록 우수
+          </span>
+        }
+      >
+        <SectionState
+          loading={bySupplier.loading}
+          error={bySupplier.error}
+          empty={suppliers.length === 0}
+          emptyText="공급사 편차 데이터가 없습니다"
+          onRetry={bySupplier.refetch}
+          minHeight={180}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ overflowX: "auto" }}>
+              <table
                 style={{
-                  padding: "5px 10px",
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  color: "#161B26",
-                  border: "1px solid #E4E7EC",
-                  borderRadius: 7,
-                  background: "#fff",
-                  outline: "none",
-                  cursor: "pointer",
+                  width: "100%",
+                  borderCollapse: "collapse",
+                  fontSize: 13,
+                  fontVariantNumeric: "tabular-nums",
                 }}
               >
-                {options.map((o) => <option key={o} value={o}>{o}</option>)}
-              </select>
+                <caption
+                  style={{
+                    captionSide: "bottom",
+                    textAlign: "left",
+                    fontSize: 11,
+                    color: T.textMuted,
+                    paddingTop: 8,
+                  }}
+                >
+                  각 셀은 최근 {days}일 성분 표준편차(σ)다. 권장 공급사는 서버가 σ 합이 최소인
+                  곳으로 계산한다 (api-contract §8.4.3).
+                </caption>
+                <thead>
+                  <tr style={{ background: T.surfaceSubtle }}>
+                    <th
+                      scope="col"
+                      style={{
+                        padding: "10px 14px",
+                        textAlign: "left",
+                        fontSize: 11.5,
+                        fontWeight: 600,
+                        color: T.textSub,
+                        borderBottom: `1px solid ${T.border}`,
+                        width: 90,
+                      }}
+                    >
+                      성분
+                    </th>
+                    {/* 응답은 공급사가 행이지만 SF-TD3 는 공급사가 열이다 → 전치해서 그린다 */}
+                    {suppliers.map((s) => {
+                      const isRec = s.code === recommended;
+                      return (
+                        <th
+                          key={s.code}
+                          scope="col"
+                          style={{
+                            padding: "10px 14px",
+                            textAlign: "right",
+                            fontSize: 11.5,
+                            fontWeight: 700,
+                            color: isRec ? "#15803D" : T.textSub,
+                            background: isRec ? "#ECFDF3" : undefined,
+                            borderBottom: `1px solid ${T.border}`,
+                          }}
+                        >
+                          {s.code}
+                          {isRec && (
+                            <span style={{ fontSize: 10, fontWeight: 600, marginLeft: 4 }}>권장</span>
+                          )}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {COMPONENTS.map((c, ri) => (
+                    <tr
+                      key={c}
+                      style={{
+                        borderBottom:
+                          ri < COMPONENTS.length - 1 ? `1px solid ${T.border}` : "none",
+                      }}
+                    >
+                      <th
+                        scope="row"
+                        style={{
+                          padding: "10px 14px",
+                          textAlign: "left",
+                          fontWeight: 700,
+                          color: T.text,
+                          fontSize: 13,
+                        }}
+                      >
+                        {COMPONENT_LABEL[c]}
+                      </th>
+                      {suppliers.map((s) => {
+                        const isRec = s.code === recommended;
+                        // `±` 는 산포(표준편차)를 뜻한다 — 부호를 붙이지 않는다
+                        return (
+                          <td
+                            key={s.code}
+                            style={{
+                              padding: "10px 14px",
+                              textAlign: "right",
+                              color: T.text,
+                              background: isRec ? "#ECFDF3" : undefined,
+                              fontWeight: isRec ? 600 : 400,
+                            }}
+                          >
+                            ±{num(Math.abs(s[c]), TABLE_DIGITS[c])}%
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
-          <div style={{ marginLeft: "auto", fontSize: 11.5, color: "#9AA4B2" }}>
-            기준: SN {SN_TARGET}% / AG {AG_TARGET}% / CU {CU_TARGET}%
-          </div>
-        </div>
-      </div>
 
-      {/* Stat cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        {STAT_CARDS.map((s) => (
-          <div
-            key={s.element}
-            className="card"
-            style={{ borderTop: `3px solid ${s.color}`, display: "flex", flexDirection: "column", gap: 12 }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-              <div>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#9AA4B2", letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 4 }}>
-                  {s.label}
-                </div>
-                <div style={{ fontSize: 10.5, color: "#9AA4B2" }}>목표값 기준</div>
+            {/* 권장 공급사 — `recommended`/`basis` 둘 다 서버 계산값이다 */}
+            {recommended ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>권장:</span>
+                <StatusBadge variant="green" label={recommended} dot />
+                <span style={{ fontSize: 12.5, color: T.textSub }}>{basis}</span>
               </div>
-              {s.warnCount > 0 && (
-                <StatusBadge variant="red" label={`경고 ${s.warnCount}건`} dot />
-              )}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <div>
-                <div style={{ fontSize: 10.5, color: "#9AA4B2", marginBottom: 2 }}>평균편차</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: s.avgDev >= 0 ? "#3A5BD9" : "#DC2626", fontVariantNumeric: "tabular-nums" }}>
-                  {s.avgDev > 0 ? "+" : ""}{s.avgDev.toFixed(2)}%
-                </div>
-              </div>
-              <div>
-                <div style={{ fontSize: 10.5, color: "#9AA4B2", marginBottom: 2 }}>최대편차</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: Math.abs(s.maxDev) > 1 ? "#D97706" : "#161B26", fontVariantNumeric: "tabular-nums" }}>
-                  {s.maxDev > 0 ? "+" : ""}{s.maxDev.toFixed(2)}%
-                </div>
-              </div>
-            </div>
-            {/* Mini progress bar showing deviation magnitude */}
-            <div style={{ height: 4, background: "#F2F4F7", borderRadius: 2, overflow: "hidden" }}>
-              <div
-                style={{
-                  height: "100%",
-                  width: `${Math.min(Math.abs(s.avgDev) / 5 * 100, 100)}%`,
-                  background: s.color,
-                  borderRadius: 2,
-                  transition: "width 0.4s",
-                }}
-              />
-            </div>
+            ) : (
+              <span style={{ fontSize: 12.5, color: T.textMuted }}>
+                권장 공급사를 판정할 데이터가 부족합니다
+              </span>
+            )}
           </div>
-        ))}
-      </div>
-
-      {/* Trend chart */}
-      <div className="card" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>편차 추이 ({period})</span>
-          <div style={{ display: "flex", gap: 16 }}>
-            {[
-              { label: "SN", color: "#3A5BD9" },
-              { label: "AG", color: "#16A34A" },
-              { label: "CU×10", color: "#D97706" },
-            ].map(({ label, color }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-                <div style={{ width: 20, height: 2, background: color, borderRadius: 1 }} />
-                <span style={{ fontSize: 11.5, color: "#687182" }}>{label}</span>
-              </div>
-            ))}
-            <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <div style={{ width: 20, height: 2, background: "#FCA5A5", borderRadius: 1, borderTop: "1px dashed #FCA5A5" }} />
-              <span style={{ fontSize: 11.5, color: "#687182" }}>경고 ±5%</span>
-            </div>
-          </div>
-        </div>
-        <div style={{ overflowX: "auto" }}>
-          <TrendChart
-            snData={TREND_DATA.sn}
-            agData={TREND_DATA.ag}
-            cuData={TREND_DATA.cu}
-          />
-        </div>
-      </div>
-
-      {/* LOT table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            padding: "14px 16px",
-            borderBottom: "1px solid #E4E7EC",
-          }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>
-            LOT별 편차 상세
-          </span>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span style={{ fontSize: 11.5, color: "#9AA4B2" }}>
-              <span style={{ color: "#DC2626", fontWeight: 700 }}>빨강</span>: ±{WARN_PCT}% 초과&nbsp;&nbsp;
-              <span style={{ color: "#D97706", fontWeight: 700 }}>주황</span>: ±{CAUTION_PCT}% 초과
-            </span>
-            <button className="btn" style={{ fontSize: 11.5, padding: "5px 12px" }}>
-              내보내기
-            </button>
-          </div>
-        </div>
-        <DataTable
-          columns={COLUMNS}
-          data={filtered}
-          rowKey={(r) => r.lot}
-          stickyHeader
-        />
-      </div>
-    </div>
+        </SectionState>
+      </Section>
+    </PageShell>
   );
 }

@@ -1,7 +1,12 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import * as api from "@/lib/koryo-api";
+import { decodeJwt, getToken } from "@/lib/auth";
+import { ROLE_LABELS } from "@/types/auth";
+import type { AuthUser } from "@/types/auth";
 
 interface NavItem {
   href: string;
@@ -110,8 +115,67 @@ const NAV_SECTIONS: NavSection[] = [
   },
 ];
 
+/** NAV_SECTIONS 에 걸린 전체 href. 긴 것부터 = 구체적인 것부터. */
+const NAV_HREFS: string[] = NAV_SECTIONS.flatMap((s) => s.items.map((i) => i.href)).sort(
+  (a, b) => b.length - a.length
+);
+
+/**
+ * 현재 경로에서 강조할 메뉴 href 를 **하나만** 고른다 — 최장 접두사 일치(longest-prefix).
+ *
+ * 이전 구현은 항목마다 `pathname === href || pathname.startsWith(href + "/")` 를 독립 판정했다.
+ * `/receiving`(입고 현황)이 `/receiving/history`·`/data`·`/supplier`·`/agent` 의 접두사라서
+ * 자식 화면 4곳에서 부모까지 같이 강조됐다(충돌 4건). 44개 라우트 중 부모/자식 href 가
+ * 겹치는 건 `/receiving` 하나뿐이지만, 판정을 전역 최장 일치로 바꾸면 앞으로 어떤
+ * 부모/자식 조합이 추가돼도 강조는 항상 정확히 하나다.
+ */
+export function resolveActiveHref(pathname: string | null | undefined): string | null {
+  if (!pathname) return null;
+  const p = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
+  for (const href of NAV_HREFS) {
+    if (p === href || p.startsWith(href + "/")) return href;
+  }
+  return null;
+}
+
 export function Sidebar() {
   const pathname = usePathname();
+
+  // 로그인 사용자를 실제로 읽는다.
+  // 이전 구현은 `관리자 / admin@koreysolder.com` 을 고정 표시했는데,
+  // 그 이메일은 **어느 계정에도 없다** (실제 admin 은 `admin@koryosolder.local`,
+  // 철자도 `koryo` 가 아니라 `korey` 로 틀려 있었다) — QA1 DEF-QA1-002.
+  const [me, setMe] = useState<AuthUser | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    // JWT 로 먼저 채워 첫 페인트에서 남의 정보가 보이지 않게 한다.
+    const token = getToken();
+    const claims = token ? decodeJwt(token) : null;
+    if (claims) {
+      setMe({
+        id: claims.uid,
+        username: claims.sub,
+        email: "",
+        role: claims.role,
+        active: true,
+        last_login: null,
+      });
+    }
+    // 이메일 등 나머지는 서버에서 받는다. 실패해도 화면을 막지 않는다.
+    api
+      .getMe()
+      .then((u) => {
+        if (!cancelled) setMe(u);
+      })
+      .catch(() => {
+        /* 폴백: JWT 클레임 유지. 이메일 자리는 "불러오지 못했습니다" 로 표시된다 */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname]);
+  const activeHref = resolveActiveHref(pathname);
 
   return (
     <aside
@@ -194,11 +258,12 @@ export function Sidebar() {
 
             {/* Items */}
             {section.items.map((item) => {
-              const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+              const isActive = activeHref === item.href;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
+                  aria-current={isActive ? "page" : undefined}
                   style={{
                     display: "block",
                     padding: "7px 10px 7px 38px",
@@ -259,14 +324,14 @@ export function Sidebar() {
             flexShrink: 0,
           }}
         >
-          관
+          {me ? me.username.slice(0, 2).toUpperCase() : "—"}
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: "#E7EAF0", lineHeight: 1.2 }}>
-            관리자
+            {me ? `${me.username} · ${ROLE_LABELS[me.role]}` : "—"}
           </div>
           <div style={{ fontSize: 10.5, color: "#687182", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            admin@koreysolder.com
+            {me?.email ?? "로그인 정보를 불러오지 못했습니다"}
           </div>
         </div>
       </div>

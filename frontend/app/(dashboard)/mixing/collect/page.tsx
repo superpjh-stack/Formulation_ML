@@ -1,476 +1,719 @@
 "use client";
 
-import { useState } from "react";
+/**
+ * FE-RT-11 — 학습 데이터 수집 · `/mixing/collect` · FR-M-01
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-11 · 계약 `api-contract.md` §8.4 · §8.4.4.
+ * **SF-TD3 에 와이어프레임 없음** — 구성은 `GET /training-data` 응답(`Page<TrainingRowDto>` +
+ * `summary` 5값)과 `POST /training-data/upload` 응답 3필드에서 도출했다.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - 🚨 **주제 교정.** 현 화면은 "LOT별 성분 측정값 입력"(= FE-RT-08 FR-R-03 의 주제)이었다.
+ *     FR-M-01 은 **학습 데이터 CSV 업로드 및 관리**다.
+ *   - 🚨 `setTimeout(800)` 후 `setRows()` 하는 **가짜 저장 제거.** 새로고침하면 사라지는 저장은
+ *     저장이 아니다 (goal.md 3절).
+ *   - 🚨 **CSV 업로드 신규 구현** — FR-M-01 이 명시한 제약이고 이 화면의 존재 이유다.
+ *     `rejected > 0` 이면 거부 행 전체를 보여주고 모달을 자동으로 닫지 않는다.
+ *   - `INITIAL_DATA`(8행) · `WEEKLY_SPARKLINE` · `EMPTY_FORM` · `STATUS_CONFIG` 제거
+ *   - 단건 입력 모달 제거 — 대응 엔드포인트가 없다. 단건 성분 등록은 **FE-RT-08 `POST /components`**
+ *   - 프론트 이상치 판정(`sn>3` / `ag>0.5` / `total>1`) 제거 → 거부 판정은 **서버 `errors[]`** 가 한다.
+ *     화면은 계약 경계를 **표시만** 한다 (학습 데이터는 이상치도 보관 대상이다)
+ *   - 성분 입력 범위 `50~75 / 0~10 / 0~3 / 20~50` → `COMPONENT_BOUNDS` (55~70 / 1~5 / 0.1~1.5 / 25~45)
+ *   - 합계 판정 `<0.5` → **`<=0.05`** (goal.md 2.3)
+ *   - `SUP_D` 제거 · 측정자(`operator`) 열 제거 (DB 컬럼 없음)
+ *
+ * ⚠ 필드명 주의: `TrainingRowDto` 는 **ML 파이프라인 규약**(`sn_pct`/`melt_temp_c`/`melt_time_min`)이다.
+ *   `lots` 컬럼명(`sn_ratio`/`temperature`/`time_min`)과 다르고 **서버가 매핑한다** (api-contract §8.4.4).
+ */
+
+import { useCallback, useMemo, useRef, useState } from "react";
 import { KpiCard } from "@/components/ui/KpiCard";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { DataTable, Column } from "@/components/ui/DataTable";
+import { DataTable, type Column } from "@/components/ui/DataTable";
+import { Modal } from "@/components/ui/Modal";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
+import { Spinner } from "@/components/ui/Spinner";
+import { T } from "@/components/ui/tokens";
+import { useTrainingData, usePublicSettings } from "@/hooks/useKoryoData";
+import { uploadTrainingData, ApiError } from "@/lib/koryo-api";
+import { passScoreOf } from "@/lib/quality";
+import { COMPONENT_BOUNDS, MELT_TEMP_RANGE } from "@/types/api";
+import type { SupplierCode, TrainingRowDto, TrainingUploadResult } from "@/types/api";
+import {
+  DASH,
+  Field,
+  FilterBar,
+  PAGE_SIZE_OPTIONS,
+  PageHeader,
+  PageShell,
+  Pagination,
+  ScreenError,
+  Section,
+  SectionState,
+  Select,
+  SUPPLIER_FILTER_OPTIONS,
+  SettingsFallbackBanner,
+  DateInput,
+  hasRole,
+  int,
+  num,
+  useRole,
+} from "../../_g1/ui";
 
-const SUPPLIERS = ["SUP_A", "SUP_B", "SUP_C", "SUP_D"];
+/** goal.md 2.3 — 배합 합계 허용 오차. 화면 어디에도 다시 쓰지 않는다 */
+const SUM_TOLERANCE = 0.05;
 
-interface MeasurementRow {
-  id: string;
-  lot: string;
-  datetime: string;
-  sn_pct: number;
-  ag_pct: number;
-  cu_pct: number;
-  pb_pct: number;
-  supplier: string;
-  operator: string;
-  status: "정상" | "이상치" | "검토중";
-}
+/**
+ * 업로드 CSV 필요 컬럼 — `TrainingRowDto` 실 필드명 그대로다 (api-contract §8.4.4).
+ * 표 헤더와 안내 문구가 같은 배열을 보므로 두 곳이 어긋날 수 없다.
+ */
+const CSV_COLUMNS = [
+  "lot_id",
+  "date",
+  "supplier_code",
+  "sn_pct",
+  "ag_pct",
+  "cu_pct",
+  "pb_pct",
+  "melt_temp_c",
+  "melt_time_min",
+  "quality_score",
+] as const;
 
-const INITIAL_DATA: MeasurementRow[] = [
-  { id: "M-001", lot: "LOT-2026-0627", datetime: "2026-06-27 08:12", sn_pct: 62.1, ag_pct: 3.02, cu_pct: 0.50, pb_pct: 34.38, supplier: "SUP_A", operator: "김철수", status: "정상" },
-  { id: "M-002", lot: "LOT-2026-0626", datetime: "2026-06-27 07:45", sn_pct: 61.8, ag_pct: 3.15, cu_pct: 0.51, pb_pct: 34.54, supplier: "SUP_B", operator: "이영희", status: "정상" },
-  { id: "M-003", lot: "LOT-2026-0625", datetime: "2026-06-27 07:30", sn_pct: 65.2, ag_pct: 2.60, cu_pct: 0.58, pb_pct: 31.62, supplier: "SUP_A", operator: "박민준", status: "이상치" },
-  { id: "M-004", lot: "LOT-2026-0624", datetime: "2026-06-27 06:55", sn_pct: 62.0, ag_pct: 3.00, cu_pct: 0.50, pb_pct: 34.50, supplier: "SUP_C", operator: "정수현", status: "정상" },
-  { id: "M-005", lot: "LOT-2026-0623", datetime: "2026-06-27 06:40", sn_pct: 62.3, ag_pct: 2.95, cu_pct: 0.49, pb_pct: 34.26, supplier: "SUP_D", operator: "최지원", status: "정상" },
-  { id: "M-006", lot: "LOT-2026-0622", datetime: "2026-06-26 17:10", sn_pct: 61.9, ag_pct: 3.08, cu_pct: 0.50, pb_pct: 34.52, supplier: "SUP_B", operator: "김철수", status: "정상" },
-  { id: "M-007", lot: "LOT-2026-0621", datetime: "2026-06-26 16:35", sn_pct: 63.5, ag_pct: 2.80, cu_pct: 0.53, pb_pct: 33.17, supplier: "SUP_A", operator: "이영희", status: "검토중" },
-  { id: "M-008", lot: "LOT-2026-0620", datetime: "2026-06-26 15:50", sn_pct: 62.2, ag_pct: 3.01, cu_pct: 0.50, pb_pct: 34.29, supplier: "SUP_C", operator: "박민준", status: "정상" },
-];
+// ── 셀 ────────────────────────────────────────────────────────────────────────
 
-const WEEKLY_SPARKLINE = [5, 6, 7, 6, 8, 8, 42].map((v) => ({ value: v }));
-
-interface FormData {
-  lot: string;
-  sn_pct: string;
-  ag_pct: string;
-  cu_pct: string;
-  pb_pct: string;
-  supplier: string;
-  operator: string;
-}
-
-const EMPTY_FORM: FormData = {
-  lot: "",
-  sn_pct: "62.0",
-  ag_pct: "3.0",
-  cu_pct: "0.5",
-  pb_pct: "34.5",
-  supplier: "SUP_A",
-  operator: "",
-};
-
-function NumericField({
-  label,
+/**
+ * 성분 셀. **경계를 벗어나면 Warning 으로 표시만 한다 — 거부하지 않는다.**
+ * 경계값은 `COMPONENT_BOUNDS`(계약 정본)에서 오고 TSX 에 숫자를 쓰지 않는다.
+ */
+function BoundedCell({
   value,
-  onChange,
-  unit = "%",
-  min,
-  max,
-  step = "0.01",
+  bounds,
+  digits,
 }: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  unit?: string;
-  min?: string;
-  max?: string;
-  step?: string;
+  value: number | null | undefined;
+  bounds: readonly [number, number];
+  digits: number;
 }) {
+  const out =
+    value !== null && value !== undefined && Number.isFinite(value)
+      ? value < bounds[0] || value > bounds[1]
+      : false;
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-      <label style={{ fontSize: 12, fontWeight: 600, color: "#687182", letterSpacing: "0.02em" }}>
-        {label}
-      </label>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <input
-          type="number"
-          value={value}
-          min={min}
-          max={max}
-          step={step}
-          onChange={(e) => onChange(e.target.value)}
-          style={{
-            flex: 1,
-            padding: "8px 10px",
-            fontSize: 13,
-            fontWeight: 600,
-            color: "#161B26",
-            border: "1px solid #E4E7EC",
-            borderRadius: 8,
-            outline: "none",
-            fontVariantNumeric: "tabular-nums",
-          }}
-        />
-        <span style={{ fontSize: 12, color: "#9AA4B2", minWidth: 20 }}>{unit}</span>
-      </div>
-    </div>
+    <span
+      title={out ? `허용 범위 ${bounds[0]} ~ ${bounds[1]} 밖 (표시만 — 학습 데이터는 보관 대상)` : undefined}
+      style={{
+        fontVariantNumeric: "tabular-nums",
+        color: out ? T.warning : T.text,
+        fontWeight: out ? 600 : 400,
+      }}
+    >
+      {num(value, digits)}
+    </span>
   );
 }
 
-const STATUS_CONFIG: Record<MeasurementRow["status"], { variant: "green" | "red" | "amber" }> = {
-  정상: { variant: "green" },
-  이상치: { variant: "red" },
-  검토중: { variant: "amber" },
-};
-
-function PctCell({ value }: { value: number }) {
-  return (
-    <span style={{ fontVariantNumeric: "tabular-nums" }}>{value.toFixed(2)}%</span>
-  );
-}
+// ── 페이지 ────────────────────────────────────────────────────────────────────
 
 export default function CollectPage() {
-  const [rows, setRows] = useState<MeasurementRow[]>(INITIAL_DATA);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm] = useState<FormData>(EMPTY_FORM);
-  const [saving, setSaving] = useState(false);
+  const role = useRole();
+  const settings = usePublicSettings();
+  const passScore = passScoreOf(settings.data?.settings);
 
-  const today = rows.filter((r) => r.datetime.startsWith("2026-06-27")).length;
-  const anomalies = rows.filter((r) => r.status === "이상치").length;
+  // 기간 기본값은 **비움(전체)** — 최근 N일로 자르면 `summary.rows` 와 표의 `total` 이 어긋나
+  // "학습 데이터가 2,000건인데 표에는 30건" 처럼 읽힌다 (plan-g1 FE-RT-11 §4).
+  const [supplier, setSupplier] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [pageSize, setPageSize] = useState(50);
+  const [page, setPage] = useState(1);
 
-  function setField<K extends keyof FormData>(key: K, val: FormData[K]) {
-    setForm((prev) => ({ ...prev, [key]: val }));
+  const rangeInverted = dateFrom !== "" && dateTo !== "" && dateFrom > dateTo;
+
+  const query = useMemo(
+    () => ({
+      page,
+      page_size: pageSize,
+      supplier: (supplier || undefined) as SupplierCode | undefined,
+      date_from: dateFrom || undefined,
+      date_to: dateTo || undefined,
+    }),
+    [page, pageSize, supplier, dateFrom, dateTo]
+  );
+
+  const { data, loading, error, refetch } = useTrainingData(rangeInverted ? {} : query);
+
+  const rows = data?.items ?? [];
+  const summary = data?.summary ?? null;
+  const hasRows = (summary?.rows ?? 0) > 0;
+
+  // ── 필터 변경 시 page 를 1 로 되돌린다 ────────────────────────────────────
+  const resetPage = useCallback(<A,>(setter: (v: A) => void) => (v: A) => {
+    setter(v);
+    setPage(1);
+  }, []);
+
+  const clearFilters = () => {
+    setSupplier("");
+    setDateFrom("");
+    setDateTo("");
+    setPage(1);
+  };
+
+  // ── 표 열 ─────────────────────────────────────────────────────────────────
+  const columns: Column<TrainingRowDto>[] = useMemo(
+    () => [
+      { key: "lot_id", header: "LOT ID", width: 150 },
+      { key: "date", header: "날짜", width: 110 },
+      { key: "supplier_code", header: "공급사", width: 90 },
+      {
+        key: "sn_pct",
+        header: "Sn",
+        width: 90,
+        align: "right",
+        render: (_v, r) => <BoundedCell value={r.sn_pct} bounds={COMPONENT_BOUNDS.sn} digits={3} />,
+      },
+      {
+        key: "ag_pct",
+        header: "Ag",
+        width: 90,
+        align: "right",
+        render: (_v, r) => <BoundedCell value={r.ag_pct} bounds={COMPONENT_BOUNDS.ag} digits={3} />,
+      },
+      {
+        key: "cu_pct",
+        header: "Cu",
+        width: 90,
+        align: "right",
+        render: (_v, r) => <BoundedCell value={r.cu_pct} bounds={COMPONENT_BOUNDS.cu} digits={3} />,
+      },
+      {
+        key: "pb_pct",
+        header: "Pb",
+        width: 90,
+        align: "right",
+        render: (_v, r) => <BoundedCell value={r.pb_pct} bounds={COMPONENT_BOUNDS.pb} digits={3} />,
+      },
+      {
+        key: "sum",
+        header: "합계",
+        width: 96,
+        align: "right",
+        render: (_v, r) => {
+          const sum = r.sn_pct + r.ag_pct + r.cu_pct + r.pb_pct;
+          const bad = Math.abs(sum - 100) > SUM_TOLERANCE;
+          return (
+            <span
+              title={bad ? `성분 합계는 100%여야 한다 (허용 오차 ±${SUM_TOLERANCE})` : undefined}
+              style={{
+                fontVariantNumeric: "tabular-nums",
+                color: bad ? T.error : T.text,
+                fontWeight: bad ? 700 : 400,
+              }}
+            >
+              {bad ? "⚠ " : ""}
+              {num(sum, 1)}
+            </span>
+          );
+        },
+      },
+      {
+        key: "melt_temp_c",
+        header: "용해 온도",
+        width: 100,
+        align: "right",
+        render: (_v, r) => (
+          <BoundedCell value={r.melt_temp_c} bounds={MELT_TEMP_RANGE} digits={1} />
+        ),
+      },
+      {
+        key: "melt_time_min",
+        header: "처리 시간",
+        width: 92,
+        align: "right",
+        render: (_v, r) => (
+          <span style={{ fontVariantNumeric: "tabular-nums" }}>{int(r.melt_time_min)}</span>
+        ),
+      },
+      {
+        key: "quality_score",
+        header: "품질 점수",
+        width: 100,
+        align: "right",
+        render: (_v, r) => {
+          // 합격선은 `/settings/public` 값이다. `70` 을 여기 쓰지 않는다.
+          const below =
+            r.quality_score !== null && Number.isFinite(r.quality_score)
+              ? r.quality_score < passScore
+              : false;
+          return (
+            <span
+              style={{
+                fontVariantNumeric: "tabular-nums",
+                color: below ? T.error : T.text,
+                fontWeight: below ? 600 : 400,
+              }}
+            >
+              {num(r.quality_score, 2)}
+            </span>
+          );
+        },
+      },
+      {
+        key: "used_in_training",
+        header: "학습 사용",
+        width: 92,
+        align: "center",
+        render: (_v, r) =>
+          r.used_in_training ? (
+            <StatusBadge variant="green" label="사용" />
+          ) : (
+            <StatusBadge variant="gray" label="미사용" />
+          ),
+      },
+    ],
+    [passScore]
+  );
+
+  // ── 업로드 모달 ───────────────────────────────────────────────────────────
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const canUpload = hasRole(role, "admin", "manufacture");
+
+  if (error && !rangeInverted) {
+    return <ScreenError message={error} onRetry={refetch} />;
   }
-
-  function handleSave() {
-    setSaving(true);
-    setTimeout(() => {
-      const total =
-        parseFloat(form.sn_pct) +
-        parseFloat(form.ag_pct) +
-        parseFloat(form.cu_pct) +
-        parseFloat(form.pb_pct);
-
-      const isAnomaly =
-        Math.abs(parseFloat(form.sn_pct) - 62.0) > 3 ||
-        Math.abs(parseFloat(form.ag_pct) - 3.0) > 0.5 ||
-        Math.abs(total - 100) > 1;
-
-      const newRow: MeasurementRow = {
-        id: `M-${String(rows.length + 1).padStart(3, "0")}`,
-        lot: form.lot || `LOT-2026-${String(Date.now()).slice(-4)}`,
-        datetime: new Date().toLocaleString("sv-SE").replace("T", " ").slice(0, 16),
-        sn_pct: parseFloat(form.sn_pct),
-        ag_pct: parseFloat(form.ag_pct),
-        cu_pct: parseFloat(form.cu_pct),
-        pb_pct: parseFloat(form.pb_pct),
-        supplier: form.supplier,
-        operator: form.operator || "미상",
-        status: isAnomaly ? "이상치" : "정상",
-      };
-      setRows((prev) => [newRow, ...prev]);
-      setModalOpen(false);
-      setForm(EMPTY_FORM);
-      setSaving(false);
-    }, 800);
-  }
-
-  const COLUMNS: Column<MeasurementRow>[] = [
-    { key: "id",       header: "ID",       width: 80 },
-    { key: "lot",      header: "LOT번호",   width: 150 },
-    { key: "datetime", header: "측정일시",  width: 140 },
-    { key: "sn_pct",   header: "SN%",      width: 80,  align: "right", render: (_, r) => <PctCell value={r.sn_pct} /> },
-    { key: "ag_pct",   header: "AG%",      width: 80,  align: "right", render: (_, r) => <PctCell value={r.ag_pct} /> },
-    { key: "cu_pct",   header: "CU%",      width: 80,  align: "right", render: (_, r) => <PctCell value={r.cu_pct} /> },
-    { key: "pb_pct",   header: "PB%",      width: 80,  align: "right", render: (_, r) => <PctCell value={r.pb_pct} /> },
-    { key: "supplier", header: "공급사",    width: 80 },
-    { key: "operator", header: "측정자",    width: 80 },
-    {
-      key: "status",
-      header: "상태",
-      width: 90,
-      align: "center",
-      render: (_, r) => (
-        <StatusBadge
-          variant={STATUS_CONFIG[r.status].variant}
-          label={r.status}
-          dot
-        />
-      ),
-    },
-  ];
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0, lineHeight: 1.3 }}>
-            성분데이터 수집 · 관리
-          </h1>
-          <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-            LOT별 성분 측정값 입력 및 이상치 관리
-          </p>
-        </div>
-        <button
-          className="btn pri"
-          onClick={() => { setForm(EMPTY_FORM); setModalOpen(true); }}
-          style={{ flexShrink: 0 }}
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <path d="M7 1v12M1 7h12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-          </svg>
-          새 측정값 입력
-        </button>
-      </div>
-
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        <KpiCard
-          label="오늘 측정"
-          value={today}
-          unit="건"
-          trend="up"
-          trendValue="+3건"
-          sparkline={[5, 6, 4, 7, 6, 5, today].map((v) => ({ value: v }))}
-          accentColor="#3A5BD9"
-        />
-        <KpiCard
-          label="이번 주 누적"
-          value={42}
-          unit="건"
-          trend="up"
-          trendValue="+8건"
-          sparkline={WEEKLY_SPARKLINE}
-          accentColor="#16A34A"
-        />
-        <KpiCard
-          label="이상치 감지"
-          value={anomalies}
-          unit="건"
-          trend={anomalies > 0 ? "down" : "neutral"}
-          trendValue={anomalies > 0 ? "검토 필요" : "이상 없음"}
-          sparkline={[0, 1, 0, 0, 1, 0, anomalies].map((v) => ({ value: v }))}
-          accentColor="#DC2626"
-        />
-      </div>
-
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "14px 16px",
-            borderBottom: "1px solid #E4E7EC",
-          }}
-        >
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26", flex: 1 }}>
-            최근 수집 데이터
-          </span>
-          <span style={{ fontSize: 11.5, color: "#9AA4B2" }}>
-            총 {rows.length}건
-          </span>
-          <button className="btn" style={{ fontSize: 11.5, padding: "5px 12px" }}>
-            내보내기
+    <PageShell>
+      <PageHeader
+        title="학습 데이터 수집"
+        subtitle="과거 배합 이력(성분·공정 조건·품질 점수) 업로드 및 관리 — CSV 형식 (FR-M-01)"
+        actions={
+          <button
+            type="button"
+            className="btn pri"
+            disabled={!canUpload}
+            onClick={() => setUploadOpen(true)}
+            title={canUpload ? undefined : "admin · manufacture 만 업로드할 수 있습니다"}
+          >
+            CSV 업로드
           </button>
-        </div>
-        <DataTable
-          columns={COLUMNS}
-          data={rows}
-          rowKey={(r) => r.id}
-          stickyHeader
+        }
+      />
+
+      <SettingsFallbackBanner settings={settings.data} />
+
+      {/* 요약 5값 — `summary` 응답 그대로. 2000·86.15·9.70 같은 리터럴은 쓰지 않는다 */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+          gap: 16,
+        }}
+      >
+        <KpiCard label="총 학습 데이터" value={hasRows ? int(summary?.rows) : DASH} unit="건" />
+        <KpiCard label="데이터 시작일" value={hasRows ? (summary?.date_min ?? DASH) : DASH} />
+        <KpiCard label="데이터 종료일" value={hasRows ? (summary?.date_max ?? DASH) : DASH} />
+        <KpiCard
+          label="품질 평균"
+          value={hasRows ? num(summary?.quality_mean, 2) : DASH}
+          unit="점"
+        />
+        <KpiCard
+          label="품질 표준편차"
+          value={hasRows ? num(summary?.quality_std, 2) : DASH}
+          unit="점"
         />
       </div>
 
-      {/* Modal overlay */}
-      {modalOpen && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(14, 19, 32, 0.5)",
-            zIndex: 100,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: 24,
-          }}
-          onClick={(e) => { if (e.target === e.currentTarget) setModalOpen(false); }}
+      {/* 필터 — 서버 쿼리다. 클라이언트 filter() 를 하지 않는다 */}
+      <FilterBar>
+        <Field label="공급사" htmlFor="f-supplier" width={140}>
+          <Select
+            id="f-supplier"
+            value={supplier}
+            onChange={resetPage(setSupplier)}
+            options={SUPPLIER_FILTER_OPTIONS}
+            width={140}
+          />
+        </Field>
+        <Field label="시작일" htmlFor="f-from" width={150}>
+          <DateInput id="f-from" value={dateFrom} onChange={resetPage(setDateFrom)} invalid={rangeInverted} />
+        </Field>
+        <Field label="종료일" htmlFor="f-to" width={150}>
+          <DateInput id="f-to" value={dateTo} onChange={resetPage(setDateTo)} invalid={rangeInverted} />
+        </Field>
+        <Field label="표시 개수" htmlFor="f-size" width={120}>
+          <Select
+            id="f-size"
+            value={String(pageSize)}
+            onChange={resetPage((v: string) => setPageSize(Number(v)))}
+            options={PAGE_SIZE_OPTIONS}
+            width={120}
+          />
+        </Field>
+        <button type="button" className="btn" onClick={clearFilters}>
+          필터 초기화
+        </button>
+        {rangeInverted && (
+          <span style={{ fontSize: 12, color: T.error, fontWeight: 600, alignSelf: "center" }}>
+            종료일이 시작일보다 앞섭니다 — 조회를 보내지 않았습니다
+          </span>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 11.5, color: T.textMuted, alignSelf: "center" }}>
+          기간을 비우면 전체 기간이 조회됩니다
+        </span>
+      </FilterBar>
+
+      <Section
+        title="학습 데이터 목록"
+        right={
+          <span style={{ fontSize: 11.5, color: T.textMuted }}>
+            경계를 벗어난 값은 <span style={{ color: T.warning, fontWeight: 600 }}>표시만</span>{" "}
+            합니다 — 거부 판정은 업로드 시 서버가 합니다
+          </span>
+        }
+      >
+        <SectionState
+          loading={loading}
+          error={rangeInverted ? null : error}
+          empty={rows.length === 0}
+          emptyText="학습 데이터가 없습니다 — CSV 업로드로 추가하세요"
+          onRetry={refetch}
+          minHeight={220}
         >
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <DataTable
+              columns={columns}
+              data={rows}
+              rowKey={(r) => r.lot_id}
+              stickyHeader
+              emptyText="학습 데이터가 없습니다"
+            />
+            <Pagination
+              page={data?.page ?? page}
+              pageSize={data?.page_size ?? pageSize}
+              total={data?.total ?? 0}
+              onPage={setPage}
+            />
+          </div>
+        </SectionState>
+      </Section>
+
+      <UploadModal
+        open={uploadOpen}
+        onClose={() => setUploadOpen(false)}
+        onApplied={() => {
+          setPage(1);
+          refetch();
+        }}
+      />
+    </PageShell>
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CSV 업로드 모달 — 결과 리포트가 이 화면에서 가장 중요한 UI 다
+// ══════════════════════════════════════════════════════════════════════════════
+
+function UploadModal({
+  open,
+  onClose,
+  onApplied,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onApplied: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<TrainingUploadResult | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const isCsv = file !== null && /\.csv$/i.test(file.name);
+
+  function reset() {
+    setFile(null);
+    setResult(null);
+    setFailure(null);
+    setBusy(false);
+    if (inputRef.current) inputRef.current.value = "";
+  }
+
+  function close() {
+    reset();
+    onClose();
+  }
+
+  async function handleUpload() {
+    if (!file || !isCsv) return;
+    setBusy(true);
+    setFailure(null);
+    setResult(null);
+    try {
+      // 🔴 실제 요청이다. 성공 표시는 서버가 응답한 뒤에만 한다.
+      const res = await uploadTrainingData(file);
+      setResult(res);
+      // 거부가 없으면 곧바로 목록을 갱신한다. 거부가 있으면 사용자가 리포트를 확인한 뒤에 갱신한다.
+      if (res.rejected === 0) onApplied();
+    } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0;
+      const detail = err instanceof Error ? err.message : "업로드에 실패했습니다";
+      setFailure(
+        status === 422
+          ? `CSV 형식이 올바르지 않습니다 — ${detail}`
+          : status === 403
+            ? "접근 권한이 없습니다"
+            : detail
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  /** 거부 행을 클라이언트에서 CSV 로 만든다 (서버 왕복 없음) */
+  function downloadRejected() {
+    if (!result || result.errors.length === 0) return;
+    const esc = (s: string) => `"${s.replace(/"/g, '""')}"`;
+    const body = result.errors.map((e) => `${e.row},${esc(e.message)}`).join("\r\n");
+    // BOM — Excel 이 UTF-8 한글을 깨뜨리지 않게 한다
+    const blob = new Blob([`﻿행,오류 내용\r\n${body}\r\n`], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `training-upload-rejected-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  const hasRejected = result !== null && result.rejected > 0;
+
+  return (
+    <Modal
+      open={open}
+      onClose={close}
+      title="학습 데이터 CSV 업로드"
+      description="FR-M-01 — CSV 형식만 지원합니다"
+      width={620}
+      // 결과 리포트를 보는 중에는 실수로 닫히지 않게 한다
+      closeOnOverlayClick={!busy && !hasRejected}
+      closeOnEsc={!busy}
+      footerVariant="surface"
+      footer={
+        result ? (
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            {hasRejected && (
+              <button type="button" className="btn" onClick={downloadRejected}>
+                CSV로 저장
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn pri"
+              onClick={() => {
+                if (hasRejected) onApplied();
+                close();
+              }}
+            >
+              확인
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button type="button" className="btn" onClick={close} disabled={busy}>
+              취소
+            </button>
+            <button
+              type="button"
+              className="btn pri"
+              onClick={handleUpload}
+              disabled={!isCsv || busy}
+            >
+              {busy ? "업로드 중…" : "업로드"}
+            </button>
+          </div>
+        )
+      }
+    >
+      {result ? (
+        <UploadReport result={result} />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {failure && <ErrorAlert message={failure} />}
+
+          <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.textSub }}>CSV 파일</span>
+            <input
+              ref={inputRef}
+              type="file"
+              accept=".csv"
+              disabled={busy}
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null);
+                setFailure(null);
+              }}
+              style={{ fontSize: 12.5 }}
+            />
+          </label>
+
+          {file && !isCsv && (
+            <span style={{ fontSize: 12, color: T.error, fontWeight: 600 }}>
+              `.csv` 파일만 업로드할 수 있습니다 (선택한 파일: {file.name})
+            </span>
+          )}
+
+          {busy && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Spinner size="sm" />
+              <span style={{ fontSize: 12.5, color: T.textSub }}>
+                서버가 파일을 검증하는 중입니다. 행 수에 따라 몇 초 걸릴 수 있습니다.
+              </span>
+            </div>
+          )}
+
           <div
             style={{
-              background: "#fff",
-              borderRadius: 16,
-              width: "100%",
-              maxWidth: 520,
-              boxShadow: "0 20px 60px rgba(14,19,32,0.2)",
-              display: "flex",
-              flexDirection: "column",
-              gap: 0,
-              overflow: "hidden",
+              padding: "12px 14px",
+              borderRadius: 8,
+              background: T.surfaceSubtle,
+              border: `1px solid ${T.border}`,
             }}
           >
-            {/* Modal header */}
-            <div
+            <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 6 }}>
+              필요 컬럼 ({CSV_COLUMNS.length}개)
+            </div>
+            <code
               style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                padding: "18px 24px",
-                borderBottom: "1px solid #E4E7EC",
+                fontSize: 11.5,
+                lineHeight: 1.8,
+                color: T.textSub,
+                wordBreak: "break-all",
+                fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
               }}
             >
-              <span style={{ fontSize: 15, fontWeight: 700, color: "#161B26" }}>
-                새 측정값 입력
-              </span>
-              <button
-                onClick={() => setModalOpen(false)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  cursor: "pointer",
-                  color: "#9AA4B2",
-                  fontSize: 20,
-                  lineHeight: 1,
-                  padding: 4,
-                }}
-              >
-                ×
-              </button>
-            </div>
-
-            {/* Modal body */}
-            <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
-              {/* LOT number */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                <label style={{ fontSize: 12, fontWeight: 600, color: "#687182" }}>LOT번호</label>
-                <input
-                  type="text"
-                  value={form.lot}
-                  onChange={(e) => setField("lot", e.target.value)}
-                  placeholder="예: LOT-2026-0628"
-                  style={{
-                    padding: "8px 12px",
-                    fontSize: 13,
-                    color: "#161B26",
-                    border: "1px solid #E4E7EC",
-                    borderRadius: 8,
-                    outline: "none",
-                  }}
-                />
-              </div>
-
-              {/* Component inputs 2x2 */}
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: "#687182", marginBottom: 10 }}>
-                  성분 비율
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <NumericField label="SN (주석)" value={form.sn_pct} onChange={(v) => setField("sn_pct", v)} min="50" max="75" />
-                  <NumericField label="AG (은)" value={form.ag_pct} onChange={(v) => setField("ag_pct", v)} min="0" max="10" />
-                  <NumericField label="CU (구리)" value={form.cu_pct} onChange={(v) => setField("cu_pct", v)} min="0" max="3" step="0.01" />
-                  <NumericField label="PB (납)" value={form.pb_pct} onChange={(v) => setField("pb_pct", v)} min="20" max="50" />
-                </div>
-                {/* Total indicator */}
-                <div style={{ marginTop: 8 }}>
-                  {(() => {
-                    const t = parseFloat(form.sn_pct) + parseFloat(form.ag_pct) + parseFloat(form.cu_pct) + parseFloat(form.pb_pct);
-                    const ok = Math.abs(t - 100) < 0.5;
-                    const warn = Math.abs(t - 100) >= 0.5 && Math.abs(t - 100) < 2;
-                    return (
-                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                        <div style={{ flex: 1, height: 4, background: "#F2F4F7", borderRadius: 2, overflow: "hidden" }}>
-                          <div
-                            style={{
-                              height: "100%",
-                              width: `${Math.min(t, 100)}%`,
-                              background: ok ? "#16A34A" : warn ? "#D97706" : "#DC2626",
-                              borderRadius: 2,
-                              transition: "width 0.2s",
-                            }}
-                          />
-                        </div>
-                        <span style={{ fontSize: 12, fontWeight: 700, color: ok ? "#16A34A" : warn ? "#D97706" : "#DC2626", fontVariantNumeric: "tabular-nums", minWidth: 64 }}>
-                          합계 {isNaN(t) ? "—" : t.toFixed(1)}%
-                        </span>
-                      </div>
-                    );
-                  })()}
-                </div>
-              </div>
-
-              {/* Supplier + operator */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "#687182" }}>공급사</label>
-                  <select
-                    value={form.supplier}
-                    onChange={(e) => setField("supplier", e.target.value)}
-                    style={{
-                      padding: "8px 10px",
-                      fontSize: 13,
-                      fontWeight: 600,
-                      color: "#161B26",
-                      border: "1px solid #E4E7EC",
-                      borderRadius: 8,
-                      background: "#fff",
-                      outline: "none",
-                      cursor: "pointer",
-                    }}
-                  >
-                    {SUPPLIERS.map((s) => <option key={s} value={s}>{s}</option>)}
-                  </select>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                  <label style={{ fontSize: 12, fontWeight: 600, color: "#687182" }}>측정자</label>
-                  <input
-                    type="text"
-                    value={form.operator}
-                    onChange={(e) => setField("operator", e.target.value)}
-                    placeholder="예: 김철수"
-                    style={{
-                      padding: "8px 12px",
-                      fontSize: 13,
-                      color: "#161B26",
-                      border: "1px solid #E4E7EC",
-                      borderRadius: 8,
-                      outline: "none",
-                    }}
-                  />
-                </div>
-              </div>
-            </div>
-
-            {/* Modal footer */}
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: 10,
-                padding: "16px 24px",
-                borderTop: "1px solid #E4E7EC",
-                background: "#F8F9FB",
-              }}
-            >
-              <button className="btn" onClick={() => setModalOpen(false)}>
-                취소
-              </button>
-              <button
-                className="btn pri"
-                onClick={handleSave}
-                disabled={saving}
-                style={{ minWidth: 80, justifyContent: "center" }}
-              >
-                {saving ? (
-                  <span
-                    style={{
-                      width: 13,
-                      height: 13,
-                      border: "2px solid rgba(255,255,255,0.3)",
-                      borderTopColor: "#fff",
-                      borderRadius: "50%",
-                      display: "inline-block",
-                      animation: "spin 0.7s linear infinite",
-                    }}
-                  />
-                ) : (
-                  "저장"
-                )}
-              </button>
+              {CSV_COLUMNS.join(", ")}
+            </code>
+            <div style={{ fontSize: 11, color: T.textMuted, marginTop: 8, lineHeight: 1.6 }}>
+              성분 합계는 100%(허용 오차 ±{SUM_TOLERANCE})여야 하며, `quality_score` 가 빈 행은
+              학습에 쓰이지 않습니다. 최종 검증은 서버가 하고 거부 사유를 행 단위로 돌려줍니다.
             </div>
           </div>
         </div>
       )}
+    </Modal>
+  );
+}
 
-      <style>{`
-        @keyframes spin { to { transform: rotate(360deg); } }
-      `}</style>
+function UploadReport({ result }: { result: TrainingUploadResult }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "flex", gap: 24 }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontSize: 13, color: T.textSub }}>✅ 반영</span>
+          <strong
+            style={{ fontSize: 22, fontWeight: 800, color: "#15803D", fontVariantNumeric: "tabular-nums" }}
+          >
+            {int(result.accepted)}
+          </strong>
+          <span style={{ fontSize: 12, color: T.textMuted }}>건</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+          <span style={{ fontSize: 13, color: T.textSub }}>❌ 거부</span>
+          <strong
+            style={{
+              fontSize: 22,
+              fontWeight: 800,
+              color: result.rejected > 0 ? "#B91C1C" : T.textMuted,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {int(result.rejected)}
+          </strong>
+          <span style={{ fontSize: 12, color: T.textMuted }}>건</span>
+        </div>
+      </div>
+
+      {result.rejected > 0 ? (
+        <>
+          <div style={{ fontSize: 12, fontWeight: 600, color: T.text }}>
+            거부 행 ({result.errors.length.toLocaleString()}건)
+          </div>
+          {/* 전체 목록을 보여준다 — 잘라내면 사용자가 무엇이 빠졌는지 알 수 없다 */}
+          <div
+            style={{
+              maxHeight: 260,
+              overflowY: "auto",
+              border: `1px solid ${T.border}`,
+              borderRadius: 8,
+            }}
+          >
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+              <thead>
+                <tr style={{ background: T.surfaceSubtle }}>
+                  <th
+                    style={{
+                      padding: "8px 12px",
+                      textAlign: "right",
+                      width: 70,
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: T.textSub,
+                      borderBottom: `1px solid ${T.border}`,
+                      position: "sticky",
+                      top: 0,
+                      background: T.surfaceSubtle,
+                    }}
+                  >
+                    행
+                  </th>
+                  <th
+                    style={{
+                      padding: "8px 12px",
+                      textAlign: "left",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      color: T.textSub,
+                      borderBottom: `1px solid ${T.border}`,
+                      position: "sticky",
+                      top: 0,
+                      background: T.surfaceSubtle,
+                    }}
+                  >
+                    오류 내용
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.errors.map((e, i) => (
+                  <tr key={`${e.row}-${i}`} style={{ borderBottom: `1px solid ${T.border}` }}>
+                    <td
+                      style={{
+                        padding: "7px 12px",
+                        textAlign: "right",
+                        color: T.textSub,
+                        fontVariantNumeric: "tabular-nums",
+                      }}
+                    >
+                      {e.row}
+                    </td>
+                    <td style={{ padding: "7px 12px", color: T.text }}>{e.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <span style={{ fontSize: 11.5, color: T.textMuted }}>
+            거부된 행은 저장되지 않았습니다. 사유를 고쳐 다시 업로드하세요.
+          </span>
+        </>
+      ) : (
+        <span style={{ fontSize: 12.5, color: T.textSub }}>
+          거부된 행 없이 모두 반영되었습니다.
+        </span>
+      )}
     </div>
   );
 }

@@ -1,340 +1,652 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { DataTable, Column } from "@/components/ui/DataTable";
+/**
+ * FE-RT-08 — 성분 데이터 관리 · `/receiving/data` · FR-R-03
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-08 · 계약: `api-contract.md` §8.3 (G2) · db-schema §3.2.
+ *
+ * 🔴 **전면 재작성 — 주제가 달랐다.**
+ *    현 구현은 "원자재 재고·입고금액 관리" 화면이었다. 재고 게이지 4종, 월별 입고량 캔버스
+ *    차트, 단가/합계금액/검수자 열이 전부였고 **성분(Sn/Ag/Cu/Pb) 값이 화면에 하나도 없었다.**
+ *    FR-R-03 은 "성분 분석 데이터 등록/조회 + 목표값 대비 편차 자동 계산" 이다.
+ *
+ * 라운드 2 에서 고친 것:
+ *   - `STOCK` 4행 · `MOCK_RECEIVING` 10행 · `MONTHLY` 6행 · `MATERIAL_COLORS` 제거
+ *   - `GET /components` (`useComponents`) 실 연동 + 서버 필터 4종 + `Page<T>` 페이징
+ *   - **성분 4값 + 편차 3종 표시 신규** — 편차는 **서버 계산값**(`sn_deviation` 등)이다
+ *   - **`POST /components` 등록 모달 신규** — 편차는 **요청 본문에 넣지 않는다**
+ *   - 월별 입고량 차트 제거 (SN 기준으로 `AG×18`/`CU×25`/`PB×6` 임의 정규화 = 데이터 왜곡)
+ *   - 단가·합계금액·검수자 제거 (DB 컬럼 없음) · `SUP_D` 제거
+ *   - CSV 내보내기 연결 — `components` 는 `/data/export` 화이트리스트에 있다 (api-contract §8.9)
+ *
+ * 🔴 **편차 임계값을 화면에 하드코딩하지 않는다.** `usePublicSettings()` 의 `deviation_warn`
+ *    을 `isDeviationWarning()` 에 넘긴다. 서버 값을 못 읽으면 상단 배너로 그 사실을 드러낸다.
+ */
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+import { useMemo, useState } from "react";
+import { toast } from "sonner";
+import { DataTable, type Column } from "@/components/ui/DataTable";
+import { ErrorAlert } from "@/components/ui/ErrorAlert";
+import { Modal } from "@/components/ui/Modal";
+import { NumericField } from "@/components/ui/NumericField";
+import { T } from "@/components/ui/tokens";
+import { useComponents, usePublicSettings } from "@/hooks/useKoryoData";
+import {
+  ApiError,
+  createComponent,
+  exportData,
+  type ComponentQuery,
+} from "@/lib/koryo-api";
+import { isDeviationWarning } from "@/lib/quality";
+import { COMPONENT_BOUNDS } from "@/types/api";
+import type { AnalysisMethod, ComponentDto, ComponentIn, SupplierCode } from "@/types/api";
+import {
+  DASH,
+  DateInput,
+  Field,
+  FilterBar,
+  PAGE_SIZE_OPTIONS,
+  PageHeader,
+  PageShell,
+  Pagination,
+  SUPPLIER_FILTER_OPTIONS,
+  ScreenError,
+  SectionState,
+  Select,
+  SettingsFallbackBanner,
+  TextInput,
+  dateTime,
+  hasRole,
+  num,
+  signed,
+  today,
+  useRole,
+  daysAgo,
+} from "../../_g1/ui";
 
-interface StockItem {
-  material: string;
-  code: string;
-  currentKg: number;
-  optimalKg: number;
-  unit: string;
-  color: string;
-}
+/** goal.md 2.3 — 성분 합계 허용 오차. 한 곳에만 둔다 */
+const SUM_TOLERANCE = 0.05;
 
-const STOCK: StockItem[] = [
-  { material: "SN 원료 (주석)", code: "SN", currentKg: 2450, optimalKg: 3000, unit: "kg", color: "#3A5BD9" },
-  { material: "AG 원료 (은)",   code: "AG", currentKg: 125,  optimalKg: 200,  unit: "kg", color: "#7C3AED" },
-  { material: "CU 원료 (구리)", code: "CU", currentKg: 85,   optimalKg: 150,  unit: "kg", color: "#D97706" },
-  { material: "PB 원료 (납)",   code: "PB", currentKg: 340,  optimalKg: 400,  unit: "kg", color: "#687182" },
-];
+const ANALYSIS_METHODS: AnalysisMethod[] = ["XRF", "ICP", "AAS"];
 
-interface ReceivingRow {
-  id: string;
+const DEFAULT_DAYS = 90;
+
+// ── 등록 폼 ──────────────────────────────────────────────────────────────────
+
+interface ComponentForm {
+  lot_id: string;
   date: string;
-  lot: string;
-  material: string;
-  supplier: string;
-  qty: number;
-  unit: string;
-  unitPrice: number;
-  total: number;
-  inspector: string;
+  sn: string;
+  ag: string;
+  cu: string;
+  pb: string;
+  analysis_method: AnalysisMethod;
 }
 
-const MOCK_RECEIVING: ReceivingRow[] = [
-  { id: "RC-0627-001", date: "2026-06-27", lot: "LOT-A-260001", material: "SN",  supplier: "SUP_A", qty: 500,  unit: "kg", unitPrice: 28500, total: 14250000, inspector: "김민준" },
-  { id: "RC-0627-002", date: "2026-06-27", lot: "LOT-B-260001", material: "AG",  supplier: "SUP_B", qty: 30,   unit: "kg", unitPrice: 980000, total: 29400000, inspector: "이서연" },
-  { id: "RC-0626-001", date: "2026-06-26", lot: "LOT-A-260002", material: "PB",  supplier: "SUP_A", qty: 200,  unit: "kg", unitPrice: 3200,  total: 640000,   inspector: "박지훈" },
-  { id: "RC-0626-002", date: "2026-06-26", lot: "LOT-C-260001", material: "CU",  supplier: "SUP_C", qty: 50,   unit: "kg", unitPrice: 12400, total: 620000,   inspector: "김민준" },
-  { id: "RC-0625-001", date: "2026-06-25", lot: "LOT-B-260002", material: "SN",  supplier: "SUP_B", qty: 600,  unit: "kg", unitPrice: 28500, total: 17100000, inspector: "이서연" },
-  { id: "RC-0625-002", date: "2026-06-25", lot: "LOT-A-260003", material: "AG",  supplier: "SUP_A", qty: 25,   unit: "kg", unitPrice: 980000, total: 24500000, inspector: "박지훈" },
-  { id: "RC-0624-001", date: "2026-06-24", lot: "LOT-D-260001", material: "PB",  supplier: "SUP_D", qty: 300,  unit: "kg", unitPrice: 3200,  total: 960000,   inspector: "김민준" },
-  { id: "RC-0624-002", date: "2026-06-24", lot: "LOT-C-260002", material: "CU",  supplier: "SUP_C", qty: 80,   unit: "kg", unitPrice: 12400, total: 992000,   inspector: "이서연" },
-  { id: "RC-0623-001", date: "2026-06-23", lot: "LOT-A-260004", material: "SN",  supplier: "SUP_A", qty: 450,  unit: "kg", unitPrice: 28500, total: 12825000, inspector: "박지훈" },
-  { id: "RC-0623-002", date: "2026-06-23", lot: "LOT-B-260003", material: "AG",  supplier: "SUP_B", qty: 40,   unit: "kg", unitPrice: 980000, total: 39200000, inspector: "김민준" },
-];
+/** 기본값 62.000 / 3.000 / 0.500 / 34.500 — 합계가 정확히 100.000 이다 */
+function emptyForm(): ComponentForm {
+  return {
+    lot_id: "",
+    date: today(),
+    sn: "62.000",
+    ag: "3.000",
+    cu: "0.500",
+    pb: "34.500",
+    analysis_method: "XRF",
+  };
+}
 
-// Monthly bar chart data — 6 months, by material
-const MONTHLY: { month: string; SN: number; AG: number; CU: number; PB: number }[] = [
-  { month: "1월", SN: 1800, AG: 95,  CU: 60,  PB: 280 },
-  { month: "2월", SN: 2100, AG: 110, CU: 70,  PB: 310 },
-  { month: "3월", SN: 1950, AG: 100, CU: 65,  PB: 295 },
-  { month: "4월", SN: 2300, AG: 120, CU: 80,  PB: 330 },
-  { month: "5월", SN: 2200, AG: 115, CU: 75,  PB: 320 },
-  { month: "6월", SN: 2450, AG: 125, CU: 85,  PB: 340 },
-];
+function parse(v: string): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
 
-const MATERIAL_COLORS: Record<string, string> = {
-  SN: "#3A5BD9",
-  AG: "#7C3AED",
-  CU: "#D97706",
-  PB: "#687182",
-};
+function rangeError(v: number, [lo, hi]: readonly [number, number], unit = "%"): string | undefined {
+  if (!Number.isFinite(v)) return "숫자를 입력하세요";
+  if (v < lo || v > hi) return `허용 범위 ${lo} ~ ${hi}${unit} 를 벗어났습니다`;
+  return undefined;
+}
 
-// ─── Bar Chart (Canvas) ────────────────────────────────────────────────────────
+// ── 페이지 ────────────────────────────────────────────────────────────────────
 
-function MonthlyBarChart() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+export default function ComponentDataPage() {
+  const role = useRole();
+  // FE-RT-06/07 과 달리 **`quality` 도 쓰기 권한을 갖는다** — 성분 분석은 품질 업무다
+  const canWrite = hasRole(role, "admin", "manufacture", "quality");
 
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
+  const settings = usePublicSettings();
+  const pub = settings.data?.settings ?? null;
+  const snTarget = pub?.sn_target ?? 62.0;
+  const agTarget = pub?.ag_target ?? 3.0;
+  const cuTarget = pub?.cu_target ?? 0.5;
 
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.offsetWidth;
-    const H = canvas.offsetHeight;
-    canvas.width = W * dpr;
-    canvas.height = H * dpr;
-    ctx.scale(dpr, dpr);
+  const [draft, setDraft] = useState({
+    lotId: "",
+    supplier: "",
+    dateFrom: daysAgo(DEFAULT_DAYS),
+    dateTo: today(),
+    pageSize: "50",
+  });
+  const [applied, setApplied] = useState(draft);
+  const [page, setPage] = useState(1);
 
-    const padL = 48, padR = 20, padT = 20, padB = 36;
-    const chartW = W - padL - padR;
-    const chartH = H - padT - padB;
+  const rangeInverted =
+    draft.dateFrom !== "" && draft.dateTo !== "" && draft.dateFrom > draft.dateTo;
 
-    const materials = ["SN", "AG", "CU", "PB"] as const;
-    // Normalize: SN is dominant; scale others up for visibility
-    // We'll use separate y-axes conceptually — show SN on left scale
-    const snMax = 3000;
-    const months = MONTHLY.length;
-    const groupW = chartW / months;
-    const barCount = materials.length;
-    const gap = 2;
-    const barW = (groupW - (barCount + 1) * gap) / barCount;
-
-    // Grid lines
-    ctx.strokeStyle = "#F2F4F7";
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 5; i++) {
-      const y = padT + (chartH / 5) * i;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(padL + chartW, y);
-      ctx.stroke();
-      // y-axis labels (SN scale)
-      const val = Math.round(snMax - (snMax / 5) * i);
-      ctx.fillStyle = "#9AA4B2";
-      ctx.font = `${10 * dpr / dpr}px system-ui`;
-      ctx.textAlign = "right";
-      ctx.fillText(val >= 1000 ? `${(val / 1000).toFixed(1)}k` : String(val), padL - 6, y + 3.5);
-    }
-
-    // Bars
-    MONTHLY.forEach((d, mi) => {
-      const groupX = padL + mi * groupW + gap;
-
-      materials.forEach((mat, bi) => {
-        const raw = d[mat];
-        // Normalize all materials to SN scale for visual comparison
-        const normalized = mat === "SN" ? raw : raw * (mat === "AG" ? 18 : mat === "CU" ? 25 : 6);
-        const barH = Math.min((normalized / snMax) * chartH, chartH);
-        const x = groupX + bi * (barW + gap);
-        const y = padT + chartH - barH;
-
-        ctx.beginPath();
-        ctx.roundRect(x, y, barW, barH, [3, 3, 0, 0]);
-        ctx.fillStyle = MATERIAL_COLORS[mat];
-        ctx.globalAlpha = 0.85;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-      });
-
-      // Month label
-      ctx.fillStyle = "#687182";
-      ctx.font = `${11 * dpr / dpr}px system-ui`;
-      ctx.textAlign = "center";
-      ctx.fillText(d.month, padL + mi * groupW + groupW / 2, padT + chartH + 20);
-    });
-
-    // Legend
-    const legendY = 4;
-    let lx = padL;
-    materials.forEach((mat) => {
-      ctx.beginPath();
-      ctx.roundRect(lx, legendY, 10, 10, 2);
-      ctx.fillStyle = MATERIAL_COLORS[mat];
-      ctx.fill();
-      ctx.fillStyle = "#687182";
-      ctx.font = `${11 * dpr / dpr}px system-ui`;
-      ctx.textAlign = "left";
-      ctx.fillText(mat, lx + 13, legendY + 9);
-      lx += 44;
-    });
-  }, []);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ width: "100%", height: "100%", display: "block" }}
-    />
+  const query: ComponentQuery = useMemo(
+    () => ({
+      page,
+      page_size: Number(applied.pageSize),
+      lot_id: applied.lotId || undefined,
+      supplier: (applied.supplier || undefined) as SupplierCode | undefined,
+      date_from: applied.dateFrom || undefined,
+      date_to: applied.dateTo || undefined,
+    }),
+    [page, applied]
   );
-}
 
-// ─── Progress Bar ──────────────────────────────────────────────────────────────
+  const { data, loading, error, refetch } = useComponents(query);
+  const items = data?.items ?? [];
 
-function StockProgressBar({ item }: { item: StockItem }) {
-  const pct = Math.min(Math.round((item.currentKg / item.optimalKg) * 100), 100);
-  const status = pct < 40 ? "critical" : pct < 70 ? "warn" : "ok";
-  const barColor = status === "critical" ? "#DC2626" : status === "warn" ? "#D97706" : item.color;
+  function applyFilters() {
+    if (rangeInverted) return;
+    setApplied(draft);
+    setPage(1);
+  }
+
+  function resetFilters() {
+    const next = {
+      lotId: "",
+      supplier: "",
+      dateFrom: daysAgo(DEFAULT_DAYS),
+      dateTo: today(),
+      pageSize: "50",
+    };
+    setDraft(next);
+    setApplied(next);
+    setPage(1);
+  }
+
+  // ── CSV 내보내기 ────────────────────────────────────────────────────────────
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      // 🔴 `<a href>` 로 받으면 인증 헤더가 안 붙는다 — `exportData()` 를 쓴다 (§8.9)
+      const file = await exportData("components", "csv", {
+        date_from: applied.dateFrom || undefined,
+        date_to: applied.dateTo || undefined,
+        supplier: applied.supplier || undefined,
+      });
+      const url = URL.createObjectURL(file.blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      toast.success(`${file.filename} 내려받기를 시작했습니다`);
+    } catch (err) {
+      // 실패를 삼키지 않는다
+      setExportError(err instanceof Error ? err.message : "내보내기에 실패했습니다");
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  // ── 등록 모달 ───────────────────────────────────────────────────────────────
+  const [modalOpen, setModalOpen] = useState(false);
+  const [form, setForm] = useState<ComponentForm>(emptyForm);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
+  const [lotIdError, setLotIdError] = useState<string | null>(null);
+
+  const snV = parse(form.sn);
+  const agV = parse(form.ag);
+  const cuV = parse(form.cu);
+  const pbV = parse(form.pb);
+
+  const snErr = rangeError(snV, COMPONENT_BOUNDS.sn);
+  const agErr = rangeError(agV, COMPONENT_BOUNDS.ag);
+  const cuErr = rangeError(cuV, COMPONENT_BOUNDS.cu);
+  const pbErr = rangeError(pbV, COMPONENT_BOUNDS.pb);
+
+  const formSum = snV + agV + cuV + pbV;
+  const sumOk = Number.isFinite(formSum) && Math.abs(formSum - 100) <= SUM_TOLERANCE;
+
+  const canSave =
+    canWrite &&
+    !saving &&
+    form.lot_id.trim() !== "" &&
+    form.date !== "" &&
+    !snErr &&
+    !agErr &&
+    !cuErr &&
+    !pbErr &&
+    sumOk;
+
+  function openModal() {
+    setForm(emptyForm());
+    setFormError(null);
+    setLotIdError(null);
+    setModalOpen(true);
+  }
+
+  async function handleSave() {
+    if (!canSave) return;
+    setSaving(true);
+    setFormError(null);
+    setLotIdError(null);
+    try {
+      // 🔴 편차 3종(`sn_deviation` 등)을 **보내지 않는다.** 서버가 계산해 저장한다 (§8.3)
+      const body: ComponentIn = {
+        lot_id: form.lot_id.trim(),
+        date: form.date,
+        sn: snV,
+        ag: agV,
+        cu: cuV,
+        pb: pbV,
+        analysis_method: form.analysis_method,
+      };
+      await createComponent(body);
+      setModalOpen(false);
+      refetch();
+      toast.success("성분 데이터가 등록되었습니다");
+    } catch (err) {
+      const status = err instanceof ApiError ? err.status : 0;
+      const message = err instanceof Error ? err.message : "성분 등록에 실패했습니다";
+      if (status === 404) {
+        setLotIdError(`${form.lot_id.trim()} 을(를) 찾을 수 없습니다`);
+      } else if (status === 422) {
+        setFormError(message);
+      } else if (status === 403) {
+        setFormError("접근 권한이 없습니다");
+      } else if (status === 503) {
+        setFormError("서비스 일시 중단");
+      } else {
+        setFormError(message);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // ── 표 ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * 실측값 + **서버 편차**를 한 셀에 병기한다: `62.140 (+0.140)`.
+   * 색 판정은 `isDeviationWarning()` 이 하고, 임계값은 `/settings/public` 에서 온다.
+   * **프론트에서 `- 62.0` 같은 뺄셈을 하지 않는다.**
+   */
+  function devCell(component: "sn" | "ag" | "cu", value: number, deviation: number) {
+    const warn = isDeviationWarning(component, deviation, pub);
+    return (
+      <span
+        style={{
+          fontVariantNumeric: "tabular-nums",
+          color: warn ? T.error : T.text,
+          fontWeight: warn ? 600 : 400,
+        }}
+        title={warn ? "편차 경고 임계 초과" : undefined}
+      >
+        {num(value, 3)}{" "}
+        <span style={{ fontSize: 11.5, color: warn ? T.error : T.textMuted }}>
+          ({signed(deviation, 3)})
+        </span>
+      </span>
+    );
+  }
+
+  const columns: Column<ComponentDto>[] = [
+    { key: "lot_id", header: "LOT ID", width: 150 },
+    { key: "date", header: "측정일", width: 110 },
+    {
+      key: "sn",
+      header: `Sn (목표 ${num(snTarget, 1)})`,
+      width: 150,
+      align: "right",
+      render: (_v, row) => devCell("sn", row.sn, row.sn_deviation),
+    },
+    {
+      key: "ag",
+      header: `Ag (목표 ${num(agTarget, 1)})`,
+      width: 150,
+      align: "right",
+      render: (_v, row) => devCell("ag", row.ag, row.ag_deviation),
+    },
+    {
+      key: "cu",
+      header: `Cu (목표 ${num(cuTarget, 1)})`,
+      width: 150,
+      align: "right",
+      render: (_v, row) => devCell("cu", row.cu, row.cu_deviation),
+    },
+    {
+      // Pb 에는 목표값이 없다 (goal.md 2.3 은 Sn/Ag/Cu 3종만 정의) — 편차를 표시하지 않는다
+      key: "pb",
+      header: "Pb (잔량)",
+      width: 110,
+      align: "right",
+      render: (_v, row) => (
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>{num(row.pb, 3)}</span>
+      ),
+    },
+    {
+      key: "sum",
+      header: "합계",
+      width: 100,
+      align: "right",
+      render: (_v, row) => {
+        const sum = row.sn + row.ag + row.cu + row.pb;
+        const violated = Math.abs(sum - 100) > SUM_TOLERANCE;
+        return (
+          <span
+            style={{
+              fontVariantNumeric: "tabular-nums",
+              color: violated ? T.error : T.text,
+              fontWeight: violated ? 600 : 400,
+            }}
+            title={violated ? "성분 합계는 100%여야 합니다" : undefined}
+          >
+            {violated && "⚠ "}
+            {num(sum, 1)}
+          </span>
+        );
+      },
+    },
+    {
+      key: "analysis_method",
+      header: "분석법",
+      width: 90,
+      render: (_v, row) =>
+        row.analysis_method ?? <span style={{ color: T.textMuted }}>{DASH}</span>,
+    },
+    {
+      key: "created_at",
+      header: "등록일시",
+      width: 140,
+      render: (_v, row) => dateTime(row.created_at),
+    },
+  ];
+
+  if (error) return <ScreenError message={error} onRetry={refetch} />;
 
   return (
-    <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: "#161B26" }}>{item.material}</span>
-        {status === "critical" && (
-          <span style={{ fontSize: 10.5, fontWeight: 700, color: "#DC2626", background: "#FEF1F2", padding: "1px 7px", borderRadius: 20 }}>재고 부족</span>
+    <PageShell>
+      <PageHeader
+        title="성분 데이터 관리"
+        subtitle="입고 원재료 성분 분석 데이터(Sn/Ag/Cu/Pb %) 등록·조회 · 목표값 대비 편차는 서버가 계산합니다 (FR-R-03)"
+        actions={
+          <>
+            <button type="button" className="btn" onClick={handleExport} disabled={exporting}>
+              {exporting ? "내보내는 중…" : "CSV 내보내기"}
+            </button>
+            <button
+              type="button"
+              className="btn pri"
+              onClick={openModal}
+              disabled={!canWrite}
+              title={canWrite ? undefined : "등록 권한이 없습니다 (admin·manufacture·quality)"}
+            >
+              성분 데이터 등록
+            </button>
+          </>
+        }
+      />
+
+      {/* 임계값을 서버에서 못 읽었으면 숨기지 않고 드러낸다 */}
+      <SettingsFallbackBanner settings={settings.data} />
+
+      {exportError && <ErrorAlert message={`내보내기 실패 — ${exportError}`} />}
+
+      <FilterBar>
+        <Field label="LOT ID" htmlFor="cd-lot">
+          <TextInput
+            id="cd-lot"
+            value={draft.lotId}
+            onChange={(v) => setDraft((d) => ({ ...d, lotId: v }))}
+            placeholder="LOT-2026-001"
+          />
+        </Field>
+        <Field label="공급사" htmlFor="cd-supplier">
+          <Select
+            id="cd-supplier"
+            value={draft.supplier}
+            onChange={(v) => setDraft((d) => ({ ...d, supplier: v }))}
+            options={SUPPLIER_FILTER_OPTIONS}
+            width={130}
+          />
+        </Field>
+        <Field label="시작일" htmlFor="cd-from">
+          <DateInput
+            id="cd-from"
+            value={draft.dateFrom}
+            onChange={(v) => setDraft((d) => ({ ...d, dateFrom: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="종료일" htmlFor="cd-to">
+          <DateInput
+            id="cd-to"
+            value={draft.dateTo}
+            onChange={(v) => setDraft((d) => ({ ...d, dateTo: v }))}
+            invalid={rangeInverted}
+          />
+        </Field>
+        <Field label="페이지 크기" htmlFor="cd-size">
+          <Select
+            id="cd-size"
+            value={draft.pageSize}
+            onChange={(v) => setDraft((d) => ({ ...d, pageSize: v }))}
+            options={PAGE_SIZE_OPTIONS}
+            width={110}
+          />
+        </Field>
+        <button type="button" className="btn pri" onClick={applyFilters} disabled={rangeInverted}>
+          조회
+        </button>
+        <button type="button" className="btn" onClick={resetFilters}>
+          초기화
+        </button>
+        {rangeInverted && (
+          <span style={{ fontSize: 11.5, color: T.error, fontWeight: 600, alignSelf: "center" }}>
+            종료일이 시작일보다 앞설 수 없습니다
+          </span>
         )}
-        {status === "warn" && (
-          <span style={{ fontSize: 10.5, fontWeight: 700, color: "#B45309", background: "#FEF6E7", padding: "1px 7px", borderRadius: 20 }}>주의</span>
+      </FilterBar>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <SectionState
+          loading={loading}
+          error={null}
+          empty={items.length === 0}
+          emptyText="조회 조건에 해당하는 성분 데이터가 없습니다"
+          minHeight={220}
+        >
+          <DataTable columns={columns} data={items} rowKey={(r) => r.id} />
+        </SectionState>
+
+        {items.length === 0 && !loading && (
+          <button type="button" className="btn" style={{ alignSelf: "center" }} onClick={resetFilters}>
+            필터 초기화
+          </button>
         )}
+
+        {data && (
+          <Pagination page={data.page} pageSize={data.page_size} total={data.total} onPage={setPage} />
+        )}
+
+        <p style={{ fontSize: 11.5, color: T.textMuted, lineHeight: 1.7, margin: 0 }}>
+          ※ 괄호 안 값은 <strong>서버가 계산한 목표값 대비 편차</strong>입니다. 경고 임계는
+          시스템 설정(`deviation_warn`)에서 읽어 적용하며 화면에 고정된 숫자가 아닙니다. 공급사
+          열은 `ComponentOut` 에 `supplier_code` 가 없어 제공하지 않습니다 (필터는 가능 —
+          TODO-G1-009).
+        </p>
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-        <div style={{ flex: 1, height: 8, background: "#F2F4F7", borderRadius: 8, overflow: "hidden" }}>
+
+      {/* 등록 모달 */}
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title="성분 데이터 등록"
+        description="POST /api/v1/components · 편차는 서버가 계산합니다"
+        width={560}
+        footerVariant="surface"
+        footer={
+          <>
+            <button type="button" className="btn" onClick={() => setModalOpen(false)} disabled={saving}>
+              취소
+            </button>
+            <button type="button" className="btn pri" onClick={handleSave} disabled={!canSave}>
+              {saving ? "저장 중…" : "저장"}
+            </button>
+          </>
+        }
+      >
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {formError && <ErrorAlert message={formError} />}
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+              <label
+                htmlFor="cd-form-lot"
+                style={{ fontSize: 12, fontWeight: 600, color: T.textSub, letterSpacing: "0.02em" }}
+              >
+                LOT ID
+              </label>
+              <TextInput
+                id="cd-form-lot"
+                value={form.lot_id}
+                onChange={(v) => {
+                  setForm((f) => ({ ...f, lot_id: v }));
+                  setLotIdError(null);
+                }}
+                placeholder="LOT-2026-001"
+                width={undefined}
+                invalid={Boolean(lotIdError)}
+              />
+              {lotIdError && (
+                <span role="alert" style={{ fontSize: 11, color: T.error }}>
+                  {lotIdError}
+                </span>
+              )}
+            </div>
+
+            <Field label="측정일">
+              <DateInput
+                value={form.date}
+                onChange={(v) => setForm((f) => ({ ...f, date: v }))}
+                width={undefined}
+              />
+            </Field>
+
+            <NumericField
+              label="Sn"
+              value={form.sn}
+              onChange={(v) => setForm((f) => ({ ...f, sn: v }))}
+              min={COMPONENT_BOUNDS.sn[0]}
+              max={COMPONENT_BOUNDS.sn[1]}
+              step="0.001"
+              labelSuffix={`목표 ${num(snTarget, 1)}%`}
+              error={snErr}
+            />
+            <NumericField
+              label="Ag"
+              value={form.ag}
+              onChange={(v) => setForm((f) => ({ ...f, ag: v }))}
+              min={COMPONENT_BOUNDS.ag[0]}
+              max={COMPONENT_BOUNDS.ag[1]}
+              step="0.001"
+              labelSuffix={`목표 ${num(agTarget, 1)}%`}
+              error={agErr}
+            />
+            <NumericField
+              label="Cu"
+              value={form.cu}
+              onChange={(v) => setForm((f) => ({ ...f, cu: v }))}
+              min={COMPONENT_BOUNDS.cu[0]}
+              max={COMPONENT_BOUNDS.cu[1]}
+              step="0.001"
+              labelSuffix={`목표 ${num(cuTarget, 1)}%`}
+              error={cuErr}
+            />
+            <NumericField
+              label="Pb"
+              value={form.pb}
+              onChange={(v) => setForm((f) => ({ ...f, pb: v }))}
+              min={COMPONENT_BOUNDS.pb[0]}
+              max={COMPONENT_BOUNDS.pb[1]}
+              step="0.001"
+              labelSuffix="잔량 (목표값 없음)"
+              error={pbErr}
+            />
+
+            <Field label="분석법">
+              <Select
+                value={form.analysis_method}
+                onChange={(v) => setForm((f) => ({ ...f, analysis_method: v as AnalysisMethod }))}
+                options={ANALYSIS_METHODS.map((m) => ({ value: m, label: m }))}
+              />
+            </Field>
+          </div>
+
+          {/* 합계 실시간 검증 — 위반이면 저장 버튼이 잠기고 요청이 나가지 않는다 */}
           <div
             style={{
-              width: `${pct}%`,
-              height: "100%",
-              background: barColor,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "10px 14px",
               borderRadius: 8,
-              transition: "width 0.6s ease",
+              background: sumOk ? "#ECFDF3" : "#FEF1F2",
+              border: `1px solid ${sumOk ? "#16A34A" : T.error}`,
             }}
-          />
+          >
+            <span style={{ fontSize: 12.5, fontWeight: 600, color: sumOk ? "#15803D" : "#B91C1C" }}>
+              합계: {Number.isFinite(formSum) ? num(formSum, 3) : DASH}%
+            </span>
+            <span style={{ fontSize: 11.5, color: sumOk ? "#15803D" : "#B91C1C" }}>
+              {sumOk ? "✅ 정상" : "성분 합계는 100%여야 합니다"}
+            </span>
+          </div>
+
+          {/* 편차 **미리보기** — 표시 전용이다. 요청 본문에는 넣지 않는다 */}
+          <div className="card" style={{ background: T.surfaceSubtle, padding: "12px 14px" }}>
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: T.textSub, marginBottom: 8 }}>
+              편차 미리보기 (표시 전용 — 저장값은 서버가 다시 계산합니다)
+            </div>
+            <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+              {(
+                [
+                  { key: "sn" as const, label: "Sn", value: snV, target: snTarget, digits: 3 },
+                  { key: "ag" as const, label: "Ag", value: agV, target: agTarget, digits: 3 },
+                  { key: "cu" as const, label: "Cu", value: cuV, target: cuTarget, digits: 3 },
+                ]
+              ).map(({ key, label, value, target, digits }) => {
+                const dev = Number.isFinite(value) ? value - target : NaN;
+                const warn = Number.isFinite(dev) && isDeviationWarning(key, dev, pub);
+                return (
+                  <span
+                    key={key}
+                    style={{
+                      fontSize: 12.5,
+                      fontVariantNumeric: "tabular-nums",
+                      color: warn ? T.error : T.text,
+                      fontWeight: warn ? 600 : 400,
+                    }}
+                  >
+                    {label}: {signed(dev, digits)}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
         </div>
-        <span style={{ fontSize: 11, fontWeight: 700, color: barColor, fontVariantNumeric: "tabular-nums", minWidth: 36, textAlign: "right" }}>
-          {pct}%
-        </span>
-      </div>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-        <span style={{ fontSize: 22, fontWeight: 800, color: "#161B26", fontVariantNumeric: "tabular-nums", letterSpacing: "-0.02em" }}>
-          {item.currentKg.toLocaleString()}
-        </span>
-        <span style={{ fontSize: 12, color: "#9AA4B2" }}>/ {item.optimalKg.toLocaleString()} {item.unit}</span>
-      </div>
-    </div>
-  );
-}
-
-// ─── Table columns ────────────────────────────────────────────────────────────
-
-const COLUMNS: Column<ReceivingRow>[] = [
-  { key: "date",     header: "입고일",   width: 110 },
-  { key: "lot",      header: "LOT번호",  width: 140 },
-  {
-    key: "material",
-    header: "원자재",
-    width: 80,
-    align: "center",
-    render: (v) => {
-      const mat = v as string;
-      return (
-        <span style={{
-          display: "inline-block",
-          padding: "2px 10px",
-          borderRadius: 20,
-          fontSize: 11.5,
-          fontWeight: 700,
-          background: `${MATERIAL_COLORS[mat]}18`,
-          color: MATERIAL_COLORS[mat],
-          letterSpacing: "0.02em",
-        }}>
-          {mat}
-        </span>
-      );
-    },
-  },
-  { key: "supplier",  header: "공급사",  width: 90  },
-  { key: "qty",       header: "수량(kg)", width: 90, align: "right",
-    render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-  { key: "unitPrice", header: "단가(원)", width: 110, align: "right",
-    render: (v) => <span style={{ fontVariantNumeric: "tabular-nums" }}>{(v as number).toLocaleString()}</span> },
-  { key: "total",     header: "합계(원)", width: 130, align: "right",
-    render: (v) => <strong style={{ fontVariantNumeric: "tabular-nums", color: "#161B26" }}>{(v as number).toLocaleString()}</strong> },
-  { key: "inspector", header: "검수자",   width: 90  },
-];
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
-const MATERIALS_FILTER = ["전체", "SN", "AG", "CU", "PB"];
-const SUPPLIERS_FILTER = ["전체", "SUP_A", "SUP_B", "SUP_C", "SUP_D"];
-
-const selectStyle: React.CSSProperties = {
-  padding: "6px 10px", fontSize: 12.5, border: "1px solid #E4E7EC",
-  borderRadius: 7, background: "#fff", color: "#161B26", cursor: "pointer", outline: "none",
-};
-
-export default function ReceivingDataPage() {
-  const [materialFilter, setMaterialFilter] = useState("전체");
-  const [supplierFilter, setSupplierFilter] = useState("전체");
-
-  const filtered = MOCK_RECEIVING.filter((r) => {
-    if (materialFilter !== "전체" && r.material !== materialFilter) return false;
-    if (supplierFilter !== "전체" && r.supplier !== supplierFilter) return false;
-    return true;
-  });
-
-  const totalAmount = filtered.reduce((a, r) => a + r.total, 0);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>입고 데이터 관리</h1>
-        <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>원자재 재고 현황 및 입고 이력 관리</p>
-      </div>
-
-      {/* Stock cards */}
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#161B26", marginBottom: 12 }}>원자재 재고 현황</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
-          {STOCK.map((item) => <StockProgressBar key={item.code} item={item} />)}
-        </div>
-      </div>
-
-      {/* Bar chart */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{ padding: "14px 16px", borderBottom: "1px solid #E4E7EC" }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26" }}>원자재별 월별 입고량</span>
-          <span style={{ fontSize: 11.5, color: "#9AA4B2", marginLeft: 8 }}>2026년 1~6월 · 단위: kg (SN 기준 스케일)</span>
-        </div>
-        <div style={{ padding: "16px", height: 200 }}>
-          <MonthlyBarChart />
-        </div>
-      </div>
-
-      {/* Table */}
-      <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-        <div style={{
-          display: "flex", alignItems: "center", gap: 10,
-          padding: "14px 16px", borderBottom: "1px solid #E4E7EC", flexWrap: "wrap",
-        }}>
-          <span style={{ fontSize: 13, fontWeight: 700, color: "#161B26", flex: 1, minWidth: 100 }}>
-            입고 이력 <span style={{ fontWeight: 400, color: "#9AA4B2", fontSize: 12 }}>({filtered.length}건)</span>
-          </span>
-          <label style={{ fontSize: 12, color: "#687182", display: "flex", alignItems: "center", gap: 6 }}>
-            원자재
-            <select style={selectStyle} value={materialFilter} onChange={(e) => setMaterialFilter(e.target.value)}>
-              {MATERIALS_FILTER.map((m) => <option key={m}>{m}</option>)}
-            </select>
-          </label>
-          <label style={{ fontSize: 12, color: "#687182", display: "flex", alignItems: "center", gap: 6 }}>
-            공급사
-            <select style={selectStyle} value={supplierFilter} onChange={(e) => setSupplierFilter(e.target.value)}>
-              {SUPPLIERS_FILTER.map((s) => <option key={s}>{s}</option>)}
-            </select>
-          </label>
-          <button style={{
-            padding: "5px 14px", fontSize: 12, fontWeight: 600, borderRadius: 6,
-            border: "1px solid #E4E7EC", background: "#F8F9FB", color: "#687182", cursor: "pointer",
-          }}>
-            CSV 내보내기
-          </button>
-        </div>
-        <DataTable columns={COLUMNS} data={filtered} rowKey={(r) => r.id} stickyHeader />
-        <div style={{
-          padding: "10px 16px", borderTop: "1px solid #F2F4F7",
-          display: "flex", alignItems: "center", gap: 20,
-        }}>
-          <span style={{ fontSize: 11.5, color: "#687182" }}>
-            총 입고금액 <strong style={{ color: "#3A5BD9", fontVariantNumeric: "tabular-nums" }}>
-              {totalAmount.toLocaleString()}원
-            </strong>
-          </span>
-        </div>
-      </div>
-    </div>
+      </Modal>
+    </PageShell>
   );
 }

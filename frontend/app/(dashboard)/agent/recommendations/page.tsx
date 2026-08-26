@@ -1,140 +1,272 @@
 "use client";
 
-import { useState } from "react";
-import { StatusBadge } from "@/components/ui/StatusBadge";
+/**
+ * FE-RT-41 — 추천 이력 · `/agent/recommendations` · FR-AG-04 (**선택**)
+ *
+ * 명세: `specs/plan-g3.md` FE-RT-41 · 공통 전제 §G9-1·§G9-2. 와이어프레임 없음.
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 🔴 **화면 성격 자체가 달랐다.**
+ *
+ * 현 구현은 "경보/추천/예측/정보" 4유형 **알림함**이고 읽음 처리가 핵심이었다.
+ * SF-AD2 §1.9 FR-AG-04 는 *"AI 배합 추천 이력 및 **실제 적용 결과 비교**"* 이고
+ * `api-contract.md` §8.10 도 *"(추천 vs 실제 적용 비교)"* 라고 적었다.
+ * → **알림함이 아니라 "추천값 vs 실적값 비교표"** 로 재설계했다.
+ *
+ * 라운드 2 에서 지운 것:
+ *   - 하드코딩 추천 배열 10건 하드코딩 (API 호출 0건)
+ *   - 근거 없는 내용: *"R²: 0.627 → 0.661"* (api-contract §7.4 가 성능 수치 인용을
+ *     금지한다) · *"외부 IP 203.45.12.8 로그인 시도"* · *"삼성전자 클레임(Cu 혼입)"*
+ *   - "보안 AI"·"공급망 AI"·"생산 AI" 등 **계약에 없는 Agent 종류 8개**
+ *   - `markRead`/`markAllRead` — 읽음 상태 필드도 엔드포인트도 없다.
+ *     **로컬 state 만 바꿔 저장되는 것처럼 보였다** (새로고침하면 초기화)
+ *   - `읽지 않음` 배지
+ *
+ * ⚠ `AgentRecommendationOut` 의 **필드 구성이 계약에 정의돼 있지 않다.**
+ *    아래 열 구성은 요구사항 문장과 `RecommendResponse`/`quality` 스키마에서
+ *    **유도한 것**이며, 서버 스키마가 확정되면 교체 대상이다 (§4).
+ *    v1 은 501 이라 행이 0건이므로 이 유도가 화면에 숫자를 만들어내지 않는다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface Recommendation {
-  id: string;
-  type: "경보" | "추천" | "예측" | "정보";
-  title: string;
-  body: string;
-  source: string;
-  time: string;
-  read: boolean;
-  priority: "high" | "medium" | "low";
+import { useMemo, useState } from "react";
+import { getAgentRecommendations } from "@/lib/koryo-api";
+import { T } from "@/components/ui/tokens";
+import { InlineError, PageHeader, PageShell, Pagination, Section, dateTime, num } from "../../_g1/ui";
+import { PendingBanner, isNotImplemented, useApi } from "../../_g3/ui";
+
+const PAGE_SIZE = 50;
+
+/** 성분 3자리(`lots.*_ratio DECIMAL(6,3)`) · 품질 2자리(`quality.score DECIMAL(5,2)`) */
+const RATIO_DIGITS = 3;
+const SCORE_DIGITS = 2;
+
+type Row = Record<string, unknown>;
+
+function pickNum(row: Row, ...keys: string[]): number | null {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
+  }
+  return null;
 }
 
-const MOCK_RECS: Recommendation[] = [
-  { id: "REC-001", type: "경보",  priority: "high",   title: "LOT-2026-0623 성분 불합격",          body: "Pb 함량 40.9% — 규격(40±0.5%) 초과. 즉시 조치 필요.",                          source: "품질 AI",  time: "10분 전",  read: false },
-  { id: "REC-002", type: "경보",  priority: "high",   title: "계량 센서 이상 감지",                 body: "최근 3 LOT 연속 성분 편차 양방향 패턴. 센서 교정 권장.",                        source: "설비 AI",  time: "23분 전",  read: false },
-  { id: "REC-003", type: "추천",  priority: "medium", title: "배합비 최적화 추천 — LOT-2026-0630", body: "Sn 62.95% / Pb 37.05% 배합 시 품질점수 +2.1점 예측.",                          source: "배합 AI",  time: "45분 전",  read: false },
-  { id: "REC-004", type: "예측",  priority: "medium", title: "오후 불량률 2.4% 예측",              body: "오후 2시 이후 생산분 불량률 2.4% 예측. 원자재 편차 영향.",                       source: "품질 AI",  time: "1시간 전", read: true  },
-  { id: "REC-005", type: "추천",  priority: "medium", title: "SH-013 출하 승인 촉구",              body: "LS산전 출하(700 kg) 승인 대기 중. 납기 기준 2시간 이내 처리 필요.",               source: "출하 AI",  time: "1시간 전", read: true  },
-  { id: "REC-006", type: "정보",  priority: "low",    title: "GradientBoosting 재학습 완료",       body: "모델 재학습 완료. R²: 0.627 → 0.661, MAPE: 4.1% → 3.2% 개선.",               source: "ML AI",   time: "2시간 전", read: true  },
-  { id: "REC-007", type: "예측",  priority: "low",    title: "SUP_A 입고 예정 — 내일 오전",        body: "Sn 원자재 1,200 kg 입고 예정. 순도 99.91% (정상 범위).",                        source: "공급망 AI", time: "3시간 전", read: true  },
-  { id: "REC-008", type: "정보",  priority: "low",    title: "월간 생산 목표 84% 달성",            body: "6월 27일 기준 월 목표 생산량 84% 달성. 목표치 초과 전망.",                       source: "생산 AI",  time: "4시간 전", read: true  },
-  { id: "REC-009", type: "추천",  priority: "medium", title: "CLM-009 원인 분석 완료",             body: "삼성전자 클레임(Cu 혼입) 원인: 배합 설비 세척 불량. 세척 주기 단축 권장.",         source: "품질 AI",  time: "5시간 전", read: true  },
-  { id: "REC-010", type: "경보",  priority: "high",   title: "외부 IP 로그인 시도 차단",           body: "203.45.12.8 로그인 2회 실패. 보안 팀 확인 권장.",                               source: "보안 AI",  time: "어제",     read: true  },
-];
-
-const TYPE_STYLES: Record<Recommendation["type"], { bg: string; color: string; border: string }> = {
-  경보: { bg: "#FEF1F2", color: "#B91C1C", border: "#FECDD3" },
-  추천: { bg: "#EEF1FD", color: "#1D4ED8", border: "#C7D2FE" },
-  예측: { bg: "#FEF6E7", color: "#B45309", border: "#FDE68A" },
-  정보: { bg: "#F8F9FB", color: "#5B6573", border: "#E4E7EC" },
-};
-
-const PRIORITY_DOT: Record<Recommendation["priority"], string> = {
-  high: "#DC2626", medium: "#F59E0B", low: "#9AA4B2",
-};
-
-export default function RecommendationsPage() {
-  const [recs, setRecs] = useState(MOCK_RECS);
-  const [typeFilter, setTypeFilter] = useState<"전체" | Recommendation["type"]>("전체");
-
-  function markRead(id: string) {
-    setRecs((p) => p.map((r) => r.id === id ? { ...r, read: true } : r));
+function pickStr(row: Row, ...keys: string[]): string | null {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "string" && v !== "") return v;
   }
+  return null;
+}
 
-  function markAllRead() {
-    setRecs((p) => p.map((r) => ({ ...r, read: true })));
+/** 중첩 배합 객체(`recommended_ratios: {sn, ag, ...}`)와 평면 키를 모두 받아준다 */
+function pickRatio(row: Row, group: string, comp: string): number | null {
+  const g = row[group];
+  if (g && typeof g === "object") {
+    const v = (g as Record<string, unknown>)[comp];
+    if (typeof v === "number" && Number.isFinite(v)) return v;
   }
+  return pickNum(row, `${group}_${comp}`, `${comp}_${group}`);
+}
 
-  const filtered = typeFilter === "전체" ? recs : recs.filter((r) => r.type === typeFilter);
-  const unreadCount = recs.filter((r) => !r.read).length;
+export default function AgentRecommendationsPage() {
+  const [page, setPage] = useState(1);
+
+  const state = useApi(
+    () => getAgentRecommendations({ page, page_size: PAGE_SIZE }),
+    [page]
+  );
+
+  const pending = isNotImplemented(state.status, state.error);
+
+  const rows: Row[] = useMemo(() => state.data?.items ?? [], [state.data]);
+  const total = state.data?.total ?? 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0 }}>알림 및 추천</h1>
-            {unreadCount > 0 && (
-              <span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 12, fontWeight: 700, background: "#3A5BD9", color: "#fff" }}>{unreadCount}</span>
-            )}
-          </div>
-          <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>실시간 AI 추천 알림 피드</p>
+    <PageShell>
+      <PageHeader title="추천 이력" subtitle="AI 배합 추천값과 실제 적용 결과 비교" />
+
+      {pending && (
+        <PendingBanner note="추천 이력을 저장할 테이블이 없어 조회 결과가 0건입니다. 아래 표는 열 구성만 보여줍니다." />
+      )}
+
+      {/* 501 이 아닌 실패는 오류로 그린다 — 501 과 섞으면 장애가 '준비 중' 으로 위장된다 */}
+      {!pending && state.error && <InlineError message={state.error} onRetry={state.refetch} />}
+
+      <Section
+        title={`추천 이력 (${pending ? 0 : total.toLocaleString()}건)`}
+        right={
+          <span style={{ fontSize: 11.5, color: T.textMuted }}>
+            차이 = 실제 품질 − 예측 품질
+          </span>
+        }
+      >
+        <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 12 }}>
+          <table
+            style={{
+              width: "100%",
+              borderCollapse: "collapse",
+              fontSize: 12.5,
+              fontVariantNumeric: "tabular-nums",
+              minWidth: 1080,
+            }}
+          >
+            <thead>
+              <tr style={{ background: "#F8F9FB" }}>
+                <Th rowSpan={2}>추천 일시</Th>
+                <Th rowSpan={2}>LOT</Th>
+                <Th colSpan={4} center>
+                  추천 배합 (%)
+                </Th>
+                <Th colSpan={4} center>
+                  실제 배합 (%)
+                </Th>
+                <Th rowSpan={2} right>
+                  예측 품질
+                </Th>
+                <Th rowSpan={2} right>
+                  실제 품질
+                </Th>
+                <Th rowSpan={2} right>
+                  차이
+                </Th>
+              </tr>
+              <tr style={{ background: "#F8F9FB" }}>
+                {["Sn", "Ag", "Cu", "Pb"].map((c) => (
+                  <Th key={`r-${c}`} right small>
+                    {c}
+                  </Th>
+                ))}
+                {["Sn", "Ag", "Cu", "Pb"].map((c) => (
+                  <Th key={`a-${c}`} right small>
+                    {c}
+                  </Th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {state.loading && (
+                <tr>
+                  <Td colSpan={13} muted>
+                    불러오는 중…
+                  </Td>
+                </tr>
+              )}
+
+              {!state.loading && rows.length === 0 && (
+                <tr>
+                  <Td colSpan={13} muted>
+                    {pending
+                      ? "v1 범위에서는 추천 이력을 저장·조회하지 않습니다."
+                      : "표시할 이력이 없습니다."}
+                  </Td>
+                </tr>
+              )}
+
+              {!state.loading &&
+                rows.map((row, i) => {
+                  const predicted = pickNum(row, "predicted_quality", "predicted_score");
+                  const actual = pickNum(row, "actual_quality", "actual_score", "score");
+                  const diff =
+                    predicted !== null && actual !== null ? actual - predicted : null;
+                  return (
+                    <tr key={i} style={{ borderTop: `1px solid ${T.border}` }}>
+                      <Td>{dateTime(pickStr(row, "created_at", "recommended_at", "date"))}</Td>
+                      <Td>{pickStr(row, "lot_id", "lot") ?? "—"}</Td>
+                      {["sn", "ag", "cu", "pb"].map((c) => (
+                        <Td key={`r-${c}`} right>
+                          {num(pickRatio(row, "recommended_ratios", c), RATIO_DIGITS)}
+                        </Td>
+                      ))}
+                      {["sn", "ag", "cu", "pb"].map((c) => (
+                        <Td key={`a-${c}`} right>
+                          {num(pickRatio(row, "actual_ratios", c), RATIO_DIGITS)}
+                        </Td>
+                      ))}
+                      <Td right>{num(predicted, SCORE_DIGITS)}</Td>
+                      <Td right>{num(actual, SCORE_DIGITS)}</Td>
+                      <Td right>
+                        {diff === null
+                          ? "—"
+                          : `${diff > 0 ? "+" : ""}${diff.toFixed(SCORE_DIGITS)}`}
+                      </Td>
+                    </tr>
+                  );
+                })}
+            </tbody>
+          </table>
         </div>
-        <button onClick={markAllRead} style={{ padding: "7px 16px", fontSize: 12.5, fontWeight: 600, borderRadius: 7, border: "1px solid #E4E7EC", background: "#fff", color: "#687182", cursor: "pointer" }}>
-          모두 읽음
-        </button>
-      </div>
 
-      {/* Summary */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14 }}>
-        {(["경보", "추천", "예측", "정보"] as const).map((type) => {
-          const cnt = recs.filter((r) => r.type === type).length;
-          const unread = recs.filter((r) => r.type === type && !r.read).length;
-          const s = TYPE_STYLES[type];
-          return (
-            <div key={type} className="card" style={{ padding: "14px 16px", border: `1px solid ${s.border}`, background: s.bg }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: s.color }}>{type}</span>
-                {unread > 0 && <span style={{ fontSize: 11, fontWeight: 700, color: s.color, background: "#fff", padding: "1px 6px", borderRadius: 20 }}>미확인 {unread}</span>}
-              </div>
-              <div style={{ fontSize: 24, fontWeight: 800, color: s.color, fontVariantNumeric: "tabular-nums" }}>{cnt}</div>
-            </div>
-          );
-        })}
-      </div>
+        {!pending && (
+          <Pagination page={page} pageSize={PAGE_SIZE} total={total} onPage={setPage} />
+        )}
 
-      {/* Type filter */}
-      <div style={{ display: "flex", gap: 8 }}>
-        {(["전체", "경보", "추천", "예측", "정보"] as const).map((f) => (
-          <button key={f} onClick={() => setTypeFilter(f)} style={{ padding: "5px 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 20, border: "1px solid", cursor: "pointer", borderColor: typeFilter === f ? "#3A5BD9" : "#E4E7EC", background: typeFilter === f ? "#3A5BD9" : "#fff", color: typeFilter === f ? "#fff" : "#687182" }}>{f}</button>
-        ))}
-      </div>
+        <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+          ⓘ `AgentRecommendationOut` 의 필드 구성이 계약에 정의돼 있지 않아, 위 열은 FR-AG-04
+          문장과 `RecommendResponse`·`quality` 스키마에서 유도한 것입니다. 서버 스키마 확정 시
+          교체 대상입니다.
+        </span>
+      </Section>
+    </PageShell>
+  );
+}
 
-      {/* Feed */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {filtered.map((rec) => {
-          const s = TYPE_STYLES[rec.type];
-          return (
-            <div
-              key={rec.id}
-              onClick={() => markRead(rec.id)}
-              style={{
-                padding: "14px 16px",
-                borderRadius: 10,
-                border: `1px solid ${rec.read ? "#E4E7EC" : s.border}`,
-                background: rec.read ? "#fff" : s.bg,
-                cursor: "pointer",
-                display: "flex",
-                gap: 12,
-                alignItems: "flex-start",
-                transition: "all 0.15s",
-              }}
-            >
-              {/* Unread dot */}
-              <div style={{ width: 8, height: 8, borderRadius: "50%", background: rec.read ? "#E4E7EC" : PRIORITY_DOT[rec.priority], flexShrink: 0, marginTop: 6 }} />
+function Th({
+  children,
+  colSpan,
+  rowSpan,
+  right,
+  center,
+  small,
+}: {
+  children: React.ReactNode;
+  colSpan?: number;
+  rowSpan?: number;
+  right?: boolean;
+  center?: boolean;
+  small?: boolean;
+}) {
+  return (
+    <th
+      colSpan={colSpan}
+      rowSpan={rowSpan}
+      style={{
+        padding: small ? "6px 10px" : "10px 12px",
+        fontSize: 12,
+        fontWeight: 600,
+        color: T.textSub,
+        textAlign: right ? "right" : center ? "center" : "left",
+        whiteSpace: "nowrap",
+        borderBottom: `1px solid ${T.border}`,
+      }}
+    >
+      {children}
+    </th>
+  );
+}
 
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 4 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ padding: "1px 7px", borderRadius: 20, fontSize: 11, fontWeight: 700, color: s.color, background: rec.read ? "#F2F4F7" : "#fff" }}>{rec.type}</span>
-                    <span style={{ fontSize: 13, fontWeight: rec.read ? 500 : 700, color: "#161B26" }}>{rec.title}</span>
-                  </div>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
-                    <span style={{ fontSize: 11.5, color: "#9AA4B2", whiteSpace: "nowrap" }}>{rec.time}</span>
-                    <span style={{ fontSize: 11, color: "#9AA4B2", background: "#F2F4F7", padding: "1px 7px", borderRadius: 20 }}>{rec.source}</span>
-                  </div>
-                </div>
-                <p style={{ margin: 0, fontSize: 12.5, color: "#687182", lineHeight: 1.5 }}>{rec.body}</p>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
+function Td({
+  children,
+  colSpan,
+  right,
+  muted,
+}: {
+  children: React.ReactNode;
+  colSpan?: number;
+  right?: boolean;
+  muted?: boolean;
+}) {
+  return (
+    <td
+      colSpan={colSpan}
+      style={{
+        padding: muted ? "28px 12px" : "9px 12px",
+        color: muted ? T.textMuted : T.text,
+        textAlign: muted ? "center" : right ? "right" : "left",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {children}
+    </td>
   );
 }

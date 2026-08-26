@@ -4,7 +4,8 @@ import { useModels } from "@/hooks/useModels";
 import { MetricsTable } from "@/components/charts/MetricsTable";
 import { FeatureImportanceBar } from "@/components/charts/FeatureImportanceBar";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/Card";
-import { Badge } from "@/components/ui/Badge";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { LEGACY_BADGE_VARIANT } from "@/components/ui/badge-variants";
 import { Spinner } from "@/components/ui/Spinner";
 import { ErrorAlert } from "@/components/ui/ErrorAlert";
 import { formatDate } from "@/lib/utils";
@@ -70,9 +71,10 @@ export default function ModelPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle>성능 지표</CardTitle>
                     {activeModel.trained_at && (
-                      <Badge variant="neutral" className="text-xs">
-                        {formatDate(activeModel.trained_at)}
-                      </Badge>
+                      <StatusBadge
+                        variant={LEGACY_BADGE_VARIANT.neutral}
+                        label={formatDate(activeModel.trained_at)}
+                      />
                     )}
                   </div>
                 </CardHeader>

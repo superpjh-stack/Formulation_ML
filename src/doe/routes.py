@@ -32,30 +32,26 @@ from src.doe.designs import DESIGN_REGISTRY
 from src.doe.sample_generator import generate_sample_doe_data
 from src.models.optimize import recommend_ratios, DEFAULT_BOUNDS
 
-router = APIRouter(prefix="/doe", tags=["DOE"])
+router = APIRouter(prefix="/doe", tags=["G11 DOE (레거시)"])
 
-# ── 전역 모델 캐시 (app.py _cache 와 독립 운영, 키 충돌 없음) ────────────
-_doe_cache: dict = {}
+# ══════════════════════════════════════════════════════════════════════════
+# `DEF-IT-001` 회귀 방지 — 모델 캐시를 `app.py` 와 **하나로 합쳤다** (TODO-API-002)
+#
+# 이전에는 여기 별도 dict 가 있어서 `app.py._cache` 와 같은 모델을 **두 벌** 적재했다.
+# 20명 동시 접속(NFR-P-04)에서 `/predict` 와 `/doe/simulate` 가 동시에 첫 호출을
+# 받으면 중복 로드가 겹친다. 이제 둘 다 `src/api/model_cache._BUNDLES` 를 본다.
+#
+# `_doe_cache` 는 **같은 dict 를 가리키는 별칭**이다 (기존 코드/테스트 호환).
+# 새 캐시를 만들지 마라.
+# ══════════════════════════════════════════════════════════════════════════
+from src.api import model_cache as _model_cache  # noqa: E402
+
+_doe_cache: dict = _model_cache.shared_cache()
 
 
 def _get_model(model_name: str) -> dict:
-    if model_name not in _doe_cache:
-        if model_name not in REGISTRY:
-            raise HTTPException(
-                status_code=400,
-                detail=f"알 수 없는 모델: '{model_name}'. 가능한 모델: {list(REGISTRY.keys())}",
-            )
-        try:
-            model = load_model(model_name)
-            imputer, scaler = load_preprocessors(name=model_name)
-            _doe_cache[model_name] = {"model": model, "imputer": imputer, "scaler": scaler}
-        except FileNotFoundError:
-            raise HTTPException(
-                status_code=404,
-                detail=f"모델 '{model_name}' 아티팩트 없음. 먼저 학습하세요: "
-                       f"python scripts/train.py --model {model_name}",
-            )
-    return _doe_cache[model_name]
+    """레지스트리 밖 이름이면 400, 아티팩트가 없으면 404 (`api-contract.md` §5)."""
+    return _model_cache.get_bundle_checked(model_name)
 
 
 # ══════════════════════════════════════════════════════════════════════════

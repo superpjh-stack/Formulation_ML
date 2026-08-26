@@ -1,608 +1,597 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+/**
+ * FE-RT-15 — 배합 AI Agent · `/mixing/agent` · FR-M-05 (선택)
+ *
+ * 명세: `specs/plan-g1.md` FE-RT-15 · `contracts/api-contract.md` §8.4 · §8.10 · §5.1
+ *
+ * ══════════════════════════════════════════════════════════════════════════════
+ * 이 화면은 FE-RT-10 보다 **더 위험했다.** 가짜 답변에 수치 카드까지 붙어 있어서
+ * 실제 분석 결과로 오인되기 쉬웠다.
+ *
+ * 라운드 2 에서 삭제한 것 (612줄 → 대폭 축소):
+ *   - `generateResponse()` + 6분기 하드코딩 답변 (약 115줄)
+ *     `SN 편차` · `SUP_A 품질` · `최적 배합` · `불량 공정조건` · `AG 경고` · `이상치`
+ *   - `AnalysisCard` 의 **지어낸 수치 전부** — `+3.2%`, `87.3점`, `불량률 8.2%`,
+ *     `61.85%`, `LOT-2026-0625`, `SUP_C 불량률 8.2%`, `합격률 94.4%` …
+ *     전부 DB 에 없는 값이다
+ *   - `QUICK_QUESTIONS` 6개 · `INITIAL_MESSAGES` mock 본문
+ *   - `setTimeout(..., 800 + Math.random() * 600)` 사고 연출
+ *   - `Math.random()` 기반 `uid()` → 단조 증가 카운터
+ *   - 초록 `● 온라인` 배지 (서버는 501 이다) · `"AI 응답은 ML 모델 기반 분석 결과입니다"` 문구
+ *
+ * 유지한 것: 채팅 UI 골격 · `AIIcon` · `AnalysisCardView` **골격**.
+ * 카드는 **서버 `recommended_ratios` 전용**으로 다시 배선했다.
+ * ══════════════════════════════════════════════════════════════════════════════
+ */
 
-interface Message {
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { StatusBadge } from "@/components/ui/StatusBadge";
+import { T } from "@/components/ui/tokens";
+import { askMixingAgent } from "@/lib/koryo-api";
+import { resolveError } from "@/lib/error-contract";
+import { COMPONENT_BOUNDS } from "@/types/api";
+import { NotImplementedBanner, PageHeader, PageShell, num } from "../../_g1/ui";
+
+/**
+ * CR-DB-001 승인 8테이블(`receipts`·`claims`·`process_conditions`·`condition_history`·
+ * `notification_rules`·`system_settings`·`master_codes`·`kpi_targets`)에 Agent 계열이
+ * **없다** (db-schema.md §6). `POST /agents/mixing` 는 501 이다 (실측 2026-08-25).
+ *
+ * 승인되면 이 상수만 `true` 로 바꾼다 — 전송 경로는 이미 실 API 로 배선돼 있다.
+ */
+const AGENT_ENABLED: boolean = false;
+
+/** 1번은 SF-AD2 §1.3 `FR-M-05` **원문 그대로**다. 2·3번은 같은 범위에서 도출했다 */
+const EXAMPLE_QUESTIONS = [
+  "Ag 3.2% 공급사 A 사용 시 최적 비율은?",
+  "250°C / 45분 조건에서 최적 배합을 추천해줘",
+  "Sn 편차가 큰 LOT 의 원인을 분석해줘",
+] as const;
+
+/** goal.md 2.3 — 합계 허용 오차 */
+const SUM_TOLERANCE = 0.05;
+
+const RATIO_KEYS = ["sn", "ag", "cu", "pb"] as const;
+type RatioKey = (typeof RATIO_KEYS)[number];
+
+const RATIO_LABELS: Record<RatioKey, string> = {
+  sn: "Sn",
+  ag: "Ag",
+  cu: "Cu",
+  pb: "Pb",
+};
+
+type ChatRole = "user" | "agent" | "system";
+
+interface ChatMessage {
   id: string;
-  role: "ai" | "user";
+  role: ChatRole;
   text: string;
-  timestamp: string;
-  cards?: AnalysisCard[];
+  /** `HH:mm` — 클라이언트 생성. 안내 메시지는 비워 둔다 (SSR 하이드레이션 불일치 방지) */
+  time: string;
+  /** 응답 `sources[]`. 비어 있으면 출처 영역을 숨긴다 (환각 방지) */
+  sources?: string[];
+  /**
+   * 응답의 **선택 필드**다 (`recommended_ratios?`).
+   * 없는 답변에는 카드를 렌더하지 않는다 — 빈 카드 금지 (plan-g1 §9).
+   */
+  ratios?: Partial<Record<RatioKey, number>>;
 }
 
-interface AnalysisCard {
-  title: string;
-  rows: { label: string; value: string; highlight?: boolean }[];
-}
+const GUIDE_MESSAGE: ChatMessage = {
+  id: "guide",
+  role: "agent",
+  text: "배합 최적화에 대해 질문해 주세요.\n자연어로 공정 조건과 성분을 말하면 최적 비율을 찾습니다.",
+  time: "",
+};
 
-const QUICK_QUESTIONS = [
-  "오늘 SN 편차가 가장 큰 LOT는?",
-  "SUP_A 이번 달 성분 품질은?",
-  "현재 최적 배합비율 추천해줘",
-  "불량률이 높은 공정 조건은?",
-  "AG 편차 경고 LOT 목록 보여줘",
-  "이번 주 이상치 감지 현황은?",
-];
-
-function now() {
+function clockHHmm(): string {
   return new Date().toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
 }
 
-function uid() {
-  return Math.random().toString(36).slice(2, 9);
-}
-
-// Mock AI response generator
-function generateResponse(question: string): { text: string; cards?: AnalysisCard[] } {
-  const q = question.toLowerCase();
-
-  if (q.includes("sn") && q.includes("편차") && q.includes("큰")) {
-    return {
-      text: "오늘 SN 편차 분석 결과입니다. LOT-2026-0625가 목표값(62.0%) 대비 +3.2% 편차로 가장 높게 측정되었습니다. 공급사 SUP_A에서 입고된 원재료로 추정되며, 해당 LOT는 이상치로 분류되어 검토 중입니다.",
-      cards: [
-        {
-          title: "SN 편차 상위 LOT (오늘)",
-          rows: [
-            { label: "LOT-2026-0625", value: "+3.2%", highlight: true },
-            { label: "LOT-2026-0627", value: "+1.1%" },
-            { label: "LOT-2026-0624", value: "+0.3%" },
-            { label: "LOT-2026-0626", value: "-0.2%" },
-          ],
-        },
-      ],
-    };
-  }
-
-  if (q.includes("sup_a") && (q.includes("품질") || q.includes("성분"))) {
-    return {
-      text: "SUP_A 공급사 이번 달 성분 품질 분석 결과입니다. 전체적으로 양호한 편이나 SN 성분에서 평균 +0.4% 편차가 관찰됩니다. AG와 CU는 목표값 범위 내에서 안정적으로 유지되고 있습니다.",
-      cards: [
-        {
-          title: "SUP_A 6월 성분 품질 요약",
-          rows: [
-            { label: "측정 건수", value: "18건" },
-            { label: "SN 평균편차", value: "+0.42%", highlight: true },
-            { label: "AG 평균편차", value: "-0.08%" },
-            { label: "CU 평균편차", value: "+0.02%" },
-            { label: "이상치 발생", value: "1건", highlight: true },
-            { label: "합격률", value: "94.4%" },
-          ],
-        },
-      ],
-    };
-  }
-
-  if (q.includes("최적") && (q.includes("배합") || q.includes("추천"))) {
-    return {
-      text: "현재 공정 조건(용융온도 250°C, 교반시간 45분)을 기준으로 ML 모델이 최적 배합비율을 추천합니다. GradientBoosting 모델 기준 예상 품질점수 87.3점입니다.",
-      cards: [
-        {
-          title: "추천 배합비율 (gradient_boosting)",
-          rows: [
-            { label: "SN (주석)", value: "61.85%" },
-            { label: "AG (은)", value: "3.02%" },
-            { label: "CU (구리)", value: "0.48%" },
-            { label: "PB (납)", value: "34.65%" },
-            { label: "예상 품질점수", value: "87.3점", highlight: true },
-            { label: "등급", value: "B등급" },
-          ],
-        },
-      ],
-    };
-  }
-
-  if (q.includes("불량") || q.includes("공정 조건")) {
-    return {
-      text: "지난 30일 공정 데이터 분석 결과, 용융온도 270°C 이상 + 교반시간 30분 미만 조합에서 불량률이 평균 대비 2.3배 높게 나타납니다. 특히 SUP_C 원재료 사용 시 해당 조건에서 편차가 심화됩니다.",
-      cards: [
-        {
-          title: "고위험 공정 조건",
-          rows: [
-            { label: "용융온도", value: "≥ 270°C", highlight: true },
-            { label: "교반시간", value: "≤ 30분", highlight: true },
-            { label: "관련 공급사", value: "SUP_C" },
-            { label: "불량률 (해당 조건)", value: "8.2%", highlight: true },
-            { label: "불량률 (전체 평균)", value: "3.6%" },
-          ],
-        },
-      ],
-    };
-  }
-
-  if (q.includes("ag") && q.includes("경고")) {
-    return {
-      text: "이번 달 AG 성분이 경고 기준(±5%)을 초과한 LOT는 총 1건입니다. LOT-2026-0609에서 -7.0% 편차(실측 2.79%)가 감지되었습니다.",
-      cards: [
-        {
-          title: "AG 편차 경고 LOT",
-          rows: [
-            { label: "LOT-2026-0609", value: "2.79% (−7.0%)", highlight: true },
-            { label: "측정일", value: "2026-06-09" },
-            { label: "공급사", value: "SUP_B" },
-            { label: "판정", value: "경고", highlight: true },
-          ],
-        },
-      ],
-    };
-  }
-
-  if (q.includes("이상치") && (q.includes("이번 주") || q.includes("주"))) {
-    return {
-      text: "이번 주(6/23~6/27) 이상치 감지 현황입니다. 총 42건 측정 중 1건이 이상치로 분류되었으며, 이상치 비율은 2.4%로 지난 주(3.1%) 대비 개선되었습니다.",
-      cards: [
-        {
-          title: "이번 주 이상치 현황",
-          rows: [
-            { label: "총 측정건수", value: "42건" },
-            { label: "이상치 건수", value: "1건" },
-            { label: "이상치 비율", value: "2.4%" },
-            { label: "전주 대비", value: "▼ 0.7%p", highlight: false },
-            { label: "이상 LOT", value: "LOT-2026-0625", highlight: true },
-          ],
-        },
-      ],
-    };
-  }
-
-  return {
-    text: `"${question}"에 대한 분석을 진행합니다. 현재 성분 데이터베이스에서 관련 패턴을 탐색 중입니다. 더 구체적인 조건(기간, 공급사, 성분 등)을 함께 입력하시면 더 정확한 분석 결과를 제공할 수 있습니다.`,
-  };
-}
-
-function AIIcon() {
-  return (
-    <div
-      style={{
-        width: 34,
-        height: 34,
-        borderRadius: "50%",
-        background: "linear-gradient(135deg, #3A5BD9 0%, #6B8AFF 100%)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexShrink: 0,
-      }}
-    >
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-        <path d="M8 2a2 2 0 0 1 2 2v1h1a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1V4a2 2 0 0 1 2-2z" fill="rgba(255,255,255,0.9)" />
-        <circle cx="6" cy="8" r="0.8" fill="#3A5BD9" />
-        <circle cx="10" cy="8" r="0.8" fill="#3A5BD9" />
-      </svg>
-    </div>
-  );
-}
-
-function AnalysisCardView({ card }: { card: AnalysisCard }) {
-  return (
-    <div
-      style={{
-        background: "#F8F9FB",
-        border: "1px solid #E4E7EC",
-        borderRadius: 10,
-        overflow: "hidden",
-        marginTop: 10,
-      }}
-    >
-      <div
-        style={{
-          padding: "8px 14px",
-          background: "#EEF1FD",
-          borderBottom: "1px solid #E4E7EC",
-          fontSize: 11.5,
-          fontWeight: 700,
-          color: "#3A5BD9",
-          letterSpacing: "0.02em",
-        }}
-      >
-        {card.title}
-      </div>
-      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-        {card.rows.map((row, i) => (
-          <div
-            key={i}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "3px 0",
-              borderBottom: i < card.rows.length - 1 ? "1px solid #F2F4F7" : "none",
-            }}
-          >
-            <span style={{ fontSize: 12, color: "#687182" }}>{row.label}</span>
-            <span
-              style={{
-                fontSize: 12.5,
-                fontWeight: 700,
-                color: row.highlight ? "#DC2626" : "#161B26",
-                fontVariantNumeric: "tabular-nums",
-              }}
-            >
-              {row.value}
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-const INITIAL_MESSAGES: Message[] = [
-  {
-    id: "init",
-    role: "ai",
-    text: "안녕하세요! 성분 분석 AI Agent입니다. 배합 성분, 편차 분석, 최적화 추천을 도와드립니다. 아래 추천 질문을 클릭하거나 직접 입력해 주세요.",
-    timestamp: now(),
-  },
-];
-
-export default function AgentPage() {
-  const [messages, setMessages] = useState<Message[]>(INITIAL_MESSAGES);
+export default function MixingAgentPage() {
+  const [messages, setMessages] = useState<ChatMessage[]>([GUIDE_MESSAGE]);
   const [input, setInput] = useState("");
-  const [thinking, setThinking] = useState(false);
+  const [pending, setPending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const seqRef = useRef(0);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, thinking]);
+  }, [messages, pending]);
 
-  function sendMessage(text: string) {
-    if (!text.trim() || thinking) return;
+  /** `Math.random()` 을 쓰지 않는다 */
+  const nextId = (prefix: string) => `${prefix}-${(seqRef.current += 1)}`;
 
-    const userMsg: Message = { id: uid(), role: "user", text: text.trim(), timestamp: now() };
-    setMessages((prev) => [...prev, userMsg]);
+  /**
+   * 실 API 경로. v1 에서는 컨트롤이 `disabled` 라 도달하지 않지만
+   * 승인 즉시 그대로 동작해야 하므로 배선해 둔다.
+   * 실패는 회색 시스템 메시지로 **계약 문구 그대로** — 답변을 지어내지 않는다.
+   */
+  async function send(rawQuestion: string) {
+    const question = rawQuestion.trim();
+    if (!AGENT_ENABLED || question.length === 0 || pending) return;
+
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId("u"), role: "user", text: question, time: clockHHmm() },
+    ]);
     setInput("");
-    setThinking(true);
+    setPending(true);
 
-    // Simulate AI thinking delay
-    const delay = 800 + Math.random() * 600;
-    setTimeout(() => {
-      const { text: aiText, cards } = generateResponse(text);
-      const aiMsg: Message = {
-        id: uid(),
-        role: "ai",
-        text: aiText,
-        timestamp: now(),
-        cards,
-      };
-      setMessages((prev) => [...prev, aiMsg]);
-      setThinking(false);
-    }, delay);
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage(input);
+    try {
+      const res = await askMixingAgent(question);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId("a"),
+          role: "agent",
+          text: res.answer,
+          time: clockHHmm(),
+          sources: res.sources,
+          // 서버가 준 값만 싣는다. 없으면 `undefined` → 카드가 그려지지 않는다
+          ratios: res.recommended_ratios,
+        },
+      ]);
+    } catch (err) {
+      const entry = resolveError(err);
+      const raw = err instanceof Error ? err.message : String(err);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: nextId("s"),
+          role: "system",
+          text: `${entry.title} — ${entry.detail}\n(${raw})`,
+          time: clockHHmm(),
+        },
+      ]);
+    } finally {
+      setPending(false);
     }
   }
 
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "calc(100vh - 120px)",
-        minHeight: 600,
-        gap: 0,
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "0 0 16px",
-          flexShrink: 0,
-        }}
-      >
-        <div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#161B26", margin: 0, lineHeight: 1.3 }}>
-            성분 AI Agent
-          </h1>
-          <p style={{ fontSize: 12.5, color: "#687182", margin: "4px 0 0" }}>
-            성분 분석 · 편차 탐색 · 배합 최적화 AI 어시스턴트
-          </p>
-        </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              padding: "4px 12px",
-              borderRadius: 20,
-              fontSize: 12,
-              fontWeight: 600,
-              color: "#15803D",
-              background: "#ECFDF3",
-            }}
-          >
-            <span
-              style={{
-                width: 7,
-                height: 7,
-                borderRadius: "50%",
-                background: "#16A34A",
-                boxShadow: "0 0 0 2px #BBF7D0",
-                animation: "pulse 2s infinite",
-              }}
-            />
-            온라인
-          </span>
-          <button
-            className="btn"
-            onClick={() => {
-              setMessages(INITIAL_MESSAGES);
-              setInput("");
-              setThinking(false);
-            }}
-            style={{ fontSize: 12 }}
-          >
-            초기화
-          </button>
-        </div>
-      </div>
+  const canSend = AGENT_ENABLED && input.trim().length > 0 && !pending;
+  const controlsDisabled = !AGENT_ENABLED || pending;
 
-      {/* Chat area */}
-      <div
-        className="card"
-        style={{
-          flex: 1,
-          display: "flex",
-          flexDirection: "column",
-          gap: 0,
-          padding: 0,
-          overflow: "hidden",
-          minHeight: 0,
-        }}
-      >
-        {/* Quick question chips */}
+  return (
+    <PageShell>
+      <PageHeader
+        title="배합 AI Agent"
+        subtitle="자연어 배합 최적화 질의 (FR-M-05 · 선택 항목)"
+        actions={<StatusBadge variant="gray" label="준비 중" dot />}
+      />
+
+      <NotImplementedBanner reason="Agent 대화·추천 이력 테이블이 CR-DB-001 승인 8개 테이블에 포함되지 않아 저장소가 없습니다. POST /api/v1/agents/mixing 는 현재 501 을 반환합니다." />
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 260px", gap: 20, alignItems: "start" }}>
+        {/* ── 대화 패널 ──────────────────────────────────────────────────── */}
         <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid #E4E7EC",
-            background: "#F8F9FB",
-            flexShrink: 0,
-          }}
+          className="card"
+          style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", minHeight: 520 }}
         >
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#9AA4B2", letterSpacing: "0.05em", textTransform: "uppercase", marginBottom: 8 }}>
-            추천 질문
+          <div
+            style={{
+              padding: "12px 16px",
+              borderBottom: `1px solid ${T.border}`,
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+            }}
+          >
+            <AIIcon size={34} muted />
+            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: T.text }}>배합 최적화 AI Agent</span>
+              <span style={{ fontSize: 11, color: T.textMuted }}>준비 중 · 응답 불가</span>
+            </div>
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {QUICK_QUESTIONS.map((q) => (
+
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: 16,
+              display: "flex",
+              flexDirection: "column",
+              gap: 14,
+              minHeight: 320,
+            }}
+          >
+            {messages.map((m) => (
+              <MessageBubble key={m.id} message={m} />
+            ))}
+            {pending && <TypingIndicator />}
+            <div ref={bottomRef} />
+          </div>
+
+          <div
+            style={{
+              padding: "12px 16px",
+              borderTop: `1px solid ${T.border}`,
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
+          >
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <textarea
+                value={input}
+                disabled={controlsDisabled}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send(input);
+                  }
+                }}
+                rows={2}
+                placeholder={
+                  AGENT_ENABLED
+                    ? "질문을 입력하세요 (Enter 전송 · Shift+Enter 줄바꿈)"
+                    : "준비 중입니다 — 승인 후 질문할 수 있습니다"
+                }
+                style={{
+                  flex: 1,
+                  resize: "none",
+                  padding: "9px 12px",
+                  fontSize: 13,
+                  fontFamily: "inherit",
+                  lineHeight: 1.5,
+                  border: `1px solid ${T.border}`,
+                  borderRadius: 8,
+                  outline: "none",
+                  color: T.text,
+                  background: controlsDisabled ? T.surfaceSubtle : T.surface,
+                  opacity: controlsDisabled ? 0.6 : 1,
+                  cursor: controlsDisabled ? "not-allowed" : "text",
+                }}
+              />
+              <button
+                type="button"
+                className="btn pri"
+                onClick={() => void send(input)}
+                disabled={!canSend}
+                style={{
+                  padding: "9px 18px",
+                  opacity: canSend ? 1 : 0.5,
+                  cursor: canSend ? "pointer" : "not-allowed",
+                }}
+              >
+                전송
+              </button>
+            </div>
+            <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+              대화 이력 저장 테이블이 없어 <strong>세션 메모리로만</strong> 유지됩니다 — 새로고침하면
+              초기화됩니다.
+            </span>
+          </div>
+        </div>
+
+        {/* ── 예시 질문 ──────────────────────────────────────────────────── */}
+        <div className="card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.text }}>예시 질문</span>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {EXAMPLE_QUESTIONS.map((q) => (
               <button
                 key={q}
-                onClick={() => {
-                  setInput(q);
-                  inputRef.current?.focus();
-                }}
+                type="button"
+                disabled={controlsDisabled}
+                onClick={() => setInput(q)}
                 style={{
-                  padding: "5px 12px",
+                  textAlign: "left",
+                  padding: "8px 10px",
                   fontSize: 12,
-                  fontWeight: 500,
-                  color: "#3A5BD9",
+                  lineHeight: 1.5,
+                  color: "#1D4ED8",
                   background: "#EEF1FD",
-                  border: "1px solid #C7D2FD",
-                  borderRadius: 20,
-                  cursor: "pointer",
-                  transition: "all 0.12s",
-                  whiteSpace: "nowrap",
-                }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.background = "#3A5BD9";
-                  (e.currentTarget as HTMLButtonElement).style.color = "#fff";
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = "#3A5BD9";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLButtonElement).style.background = "#EEF1FD";
-                  (e.currentTarget as HTMLButtonElement).style.color = "#3A5BD9";
-                  (e.currentTarget as HTMLButtonElement).style.borderColor = "#C7D2FD";
+                  border: "1px solid #C7D2F8",
+                  borderRadius: 7,
+                  fontFamily: "inherit",
+                  opacity: controlsDisabled ? 0.5 : 1,
+                  cursor: controlsDisabled ? "not-allowed" : "pointer",
                 }}
               >
                 {q}
               </button>
             ))}
           </div>
+          <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+            1번 질문은 SF-AD2 §1.3 FR-M-05 원문입니다.
+          </span>
         </div>
+      </div>
+    </PageShell>
+  );
+}
 
-        {/* Messages scroll area */}
-        <div
-          style={{
-            flex: 1,
-            overflowY: "auto",
-            padding: "20px 20px 12px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 16,
-          }}
-        >
-          {messages.map((msg) => (
+// ── 조각 ─────────────────────────────────────────────────────────────────────
+// FE-RT-10 과 채팅 UI 가 거의 같다. 공용 `components/agent/ChatPanel.tsx` 로의 추출은
+// 디자이너(웨이브 B) 소관이라 라운드 2 에서는 화면별 지역 구현으로 둔다.
+
+function AIIcon({ size = 28, muted = false }: { size?: number; muted?: boolean }) {
+  return (
+    <div
+      aria-hidden="true"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        flexShrink: 0,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        // 준비 중에는 채도를 낮춘다 — "작동 중"으로 읽히지 않게
+        background: muted ? T.border : "linear-gradient(135deg, #3A5BD9 0%, #6B8AFF 100%)",
+      }}
+    >
+      <svg width={size * 0.47} height={size * 0.47} viewBox="0 0 16 16" fill="none">
+        <path
+          d="M8 2a2 2 0 0 1 2 2v1h1a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1V4a2 2 0 0 1 2-2z"
+          fill={muted ? "#687182" : "rgba(255,255,255,0.9)"}
+        />
+        <circle cx="6" cy="8" r="0.8" fill={muted ? T.border : "#3A5BD9"} />
+        <circle cx="10" cy="8" r="0.8" fill={muted ? T.border : "#3A5BD9"} />
+      </svg>
+    </div>
+  );
+}
+
+/**
+ * 배합 결과 카드 — **서버 `recommended_ratios` 가 있을 때만** 렌더된다.
+ *
+ * ⚠ 응답에 `predicted_quality` 가 **없다** (api-contract §8.4 — FE-RT-14 와 다르다).
+ *   그래서 이 카드에는 **품질 점수를 표시하지 않는다.** 필요하면 `자세히 보기` 로
+ *   FE-RT-14 에서 다시 실행하게 유도한다.
+ *
+ * 소수 1자리 · 합계 행은 FE-RT-14 와 **같은 규약**이다.
+ * 같은 물리량을 두 화면에서 다르게 표기하지 않는다 (plan-g1 §4).
+ */
+function RatioCard({ ratios }: { ratios: Partial<Record<RatioKey, number>> }) {
+  const values = RATIO_KEYS.map((k) => ratios[k]);
+  const present = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+  // 값이 하나도 없으면 빈 카드를 그리지 않는다
+  if (present.length === 0) return null;
+
+  const sum = present.reduce((a, b) => a + b, 0);
+  const sumOk = Math.abs(sum - 100) <= SUM_TOLERANCE;
+
+  return (
+    <div
+      style={{
+        marginTop: 10,
+        width: "100%",
+        background: T.surfaceSubtle,
+        border: `1px solid ${T.border}`,
+        borderRadius: 10,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          padding: "8px 14px",
+          background: "#EEF1FD",
+          borderBottom: `1px solid ${T.border}`,
+          fontSize: 11.5,
+          fontWeight: 700,
+          color: T.primary,
+          letterSpacing: "0.02em",
+        }}
+      >
+        추천 배합비율
+      </div>
+
+      <div style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
+        {RATIO_KEYS.map((key) => {
+          const v = ratios[key];
+          const [lo, hi] = COMPONENT_BOUNDS[key];
+          const outOfBounds = typeof v === "number" && Number.isFinite(v) && (v < lo || v > hi);
+          return (
             <div
-              key={msg.id}
+              key={key}
               style={{
                 display: "flex",
-                flexDirection: msg.role === "user" ? "row-reverse" : "row",
-                gap: 10,
-                alignItems: "flex-start",
+                justifyContent: "space-between",
+                alignItems: "center",
+                padding: "3px 0",
+                borderBottom: `1px solid ${T.border}`,
               }}
             >
-              {msg.role === "ai" && <AIIcon />}
-
-              <div
+              <span style={{ fontSize: 12, color: T.textSub }}>{RATIO_LABELS[key]}</span>
+              <span
                 style={{
-                  maxWidth: "72%",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 4,
-                  alignItems: msg.role === "user" ? "flex-end" : "flex-start",
-                }}
-              >
-                <div
-                  style={{
-                    padding: "10px 14px",
-                    borderRadius: msg.role === "user" ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
-                    background: msg.role === "user" ? "#F2F4F7" : "#fff",
-                    border: msg.role === "user" ? "none" : "1px solid #E4E7EC",
-                    fontSize: 13.5,
-                    lineHeight: 1.6,
-                    color: "#161B26",
-                    boxShadow: msg.role === "ai" ? "0 1px 3px rgba(16,24,40,0.05)" : "none",
-                  }}
-                >
-                  {msg.text}
-                </div>
-
-                {msg.cards?.map((card, i) => (
-                  <div key={i} style={{ width: "100%" }}>
-                    <AnalysisCardView card={card} />
-                  </div>
-                ))}
-
-                <span style={{ fontSize: 10.5, color: "#C2C9D6", marginTop: 2 }}>
-                  {msg.timestamp}
-                </span>
-              </div>
-
-              {msg.role === "user" && (
-                <div
-                  style={{
-                    width: 34,
-                    height: 34,
-                    borderRadius: "50%",
-                    background: "#E4E7EC",
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    flexShrink: 0,
-                    fontSize: 14,
-                    fontWeight: 700,
-                    color: "#687182",
-                  }}
-                >
-                  나
-                </div>
-              )}
-            </div>
-          ))}
-
-          {/* Thinking indicator */}
-          {thinking && (
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-              <AIIcon />
-              <div
-                style={{
-                  padding: "12px 16px",
-                  borderRadius: "4px 16px 16px 16px",
-                  background: "#fff",
-                  border: "1px solid #E4E7EC",
-                  display: "flex",
-                  gap: 5,
+                  display: "inline-flex",
                   alignItems: "center",
+                  gap: 6,
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                  color: outOfBounds ? "#B45309" : T.text,
+                  fontVariantNumeric: "tabular-nums",
                 }}
               >
-                {[0, 1, 2].map((i) => (
-                  <span
-                    key={i}
-                    style={{
-                      width: 7,
-                      height: 7,
-                      borderRadius: "50%",
-                      background: "#3A5BD9",
-                      opacity: 0.4,
-                      animation: `dotBounce 1.2s ${i * 0.2}s infinite`,
-                    }}
-                  />
-                ))}
-              </div>
+                {num(v, 1)} %
+                {outOfBounds && (
+                  <span style={{ fontSize: 10.5, fontWeight: 600 }} title={`허용 ${lo} ~ ${hi}%`}>
+                    ⚠ 경계 밖
+                  </span>
+                )}
+              </span>
             </div>
-          )}
+          );
+        })}
 
-          <div ref={bottomRef} />
-        </div>
-
-        {/* Input area */}
+        {/* 합계 — 프론트 계산. FR-M-04 제약(`Sn+Ag+Cu+Pb=100%`)이 지켜졌는지 보이는 자리 */}
         <div
           style={{
-            padding: "12px 16px",
-            borderTop: "1px solid #E4E7EC",
-            background: "#fff",
-            flexShrink: 0,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            paddingTop: 5,
           }}
         >
-          <div
+          <span style={{ fontSize: 12, fontWeight: 700, color: T.textSub }}>합계</span>
+          <span
             style={{
-              display: "flex",
-              gap: 10,
-              alignItems: "center",
-              background: "#F8F9FB",
-              border: "1px solid #E4E7EC",
-              borderRadius: 12,
-              padding: "8px 12px",
-              transition: "border-color 0.15s",
-            }}
-            onFocusCapture={(e) => {
-              (e.currentTarget as HTMLDivElement).style.borderColor = "#3A5BD9";
-            }}
-            onBlurCapture={(e) => {
-              (e.currentTarget as HTMLDivElement).style.borderColor = "#E4E7EC";
+              fontSize: 12.5,
+              fontWeight: 800,
+              color: sumOk ? "#15803D" : T.error,
+              fontVariantNumeric: "tabular-nums",
             }}
           >
-            <input
-              ref={inputRef}
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="성분 분석, 편차 조회, 배합 추천 등 질문해 주세요..."
-              style={{
-                flex: 1,
-                border: "none",
-                outline: "none",
-                background: "transparent",
-                fontSize: 13.5,
-                color: "#161B26",
-                lineHeight: 1.5,
-              }}
-            />
-            <button
-              onClick={() => sendMessage(input)}
-              disabled={!input.trim() || thinking}
-              style={{
-                width: 36,
-                height: 36,
-                borderRadius: 9,
-                border: "none",
-                background: input.trim() && !thinking ? "#3A5BD9" : "#E4E7EC",
-                cursor: input.trim() && !thinking ? "pointer" : "not-allowed",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                flexShrink: 0,
-                transition: "background 0.15s",
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M14 8L2 2l2.5 6L2 14l12-6z"
-                  fill={input.trim() && !thinking ? "#fff" : "#9AA4B2"}
-                />
-              </svg>
-            </button>
-          </div>
-          <div style={{ fontSize: 11, color: "#C2C9D6", marginTop: 6, textAlign: "center" }}>
-            Enter 키로 전송 · AI 응답은 ML 모델 기반 분석 결과입니다
-          </div>
+            {num(sum, 1)} % {sumOk ? "✅" : "⚠"}
+          </span>
         </div>
       </div>
 
+      <div
+        style={{
+          padding: "8px 14px",
+          borderTop: `1px solid ${T.border}`,
+          background: T.surface,
+          display: "flex",
+          justifyContent: "flex-end",
+        }}
+      >
+        <Link
+          href="/mixing/optimize"
+          style={{ fontSize: 11.5, fontWeight: 600, color: T.primary, textDecoration: "none" }}
+        >
+          자세히 보기 →
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+function MessageBubble({ message }: { message: ChatMessage }) {
+  const isUser = message.role === "user";
+  const isSystem = message.role === "system";
+
+  if (isSystem) {
+    return (
+      <div style={{ display: "flex", justifyContent: "center" }}>
+        <div
+          role="status"
+          style={{
+            maxWidth: "88%",
+            padding: "9px 14px",
+            borderRadius: 8,
+            background: T.surfaceSubtle,
+            border: `1px solid ${T.border}`,
+            color: T.textSub,
+            fontSize: 12,
+            lineHeight: 1.6,
+            whiteSpace: "pre-wrap",
+            textAlign: "center",
+          }}
+        >
+          {message.text}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: isUser ? "row-reverse" : "row",
+        gap: 10,
+        alignItems: "flex-start",
+      }}
+    >
+      {!isUser && <AIIcon size={34} muted />}
+      <div
+        style={{
+          maxWidth: "72%",
+          minWidth: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: isUser ? "flex-end" : "flex-start",
+        }}
+      >
+        <div
+          style={{
+            padding: "10px 14px",
+            borderRadius: isUser ? "16px 4px 16px 16px" : "4px 16px 16px 16px",
+            background: isUser ? T.primary : T.surface,
+            color: isUser ? "#fff" : T.text,
+            border: isUser ? "none" : `1px solid ${T.border}`,
+            fontSize: 13.5,
+            lineHeight: 1.6,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          {message.text}
+        </div>
+
+        {/* 배합 카드 — `recommended_ratios` 가 있을 때만 */}
+        {!isUser && message.ratios && <RatioCard ratios={message.ratios} />}
+
+        {/* 근거 출처 — 비어 있으면 영역 자체를 그리지 않는다 */}
+        {!isUser && message.sources && message.sources.length > 0 && (
+          <div
+            style={{
+              marginTop: 6,
+              width: "100%",
+              padding: "7px 10px",
+              borderRadius: 7,
+              border: `1px solid ${T.border}`,
+              background: T.surface,
+              display: "flex",
+              flexDirection: "column",
+              gap: 3,
+            }}
+          >
+            <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted }}>근거 출처</span>
+            {message.sources.map((s, i) => (
+              <span key={`${s}-${i}`} style={{ fontSize: 11.5, color: T.textSub, lineHeight: 1.5 }}>
+                • {s}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {message.time && (
+          <span style={{ fontSize: 10.5, color: T.textMuted, marginTop: 3 }}>{message.time}</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+      <AIIcon size={34} muted />
+      <div
+        aria-label="응답 대기 중"
+        style={{
+          padding: "12px 16px",
+          borderRadius: "4px 16px 16px 16px",
+          background: T.surface,
+          border: `1px solid ${T.border}`,
+          display: "flex",
+          gap: 5,
+          alignItems: "center",
+        }}
+      >
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: T.textMuted,
+              opacity: 0.5,
+              animation: `mixingDot 1.2s ${i * 0.2}s infinite`,
+            }}
+          />
+        ))}
+      </div>
       <style>{`
-        @keyframes pulse {
-          0%, 100% { box-shadow: 0 0 0 2px #BBF7D0; }
-          50% { box-shadow: 0 0 0 4px #86EFAC; }
-        }
-        @keyframes dotBounce {
+        @keyframes mixingDot {
           0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
           30% { transform: translateY(-5px); opacity: 1; }
         }
