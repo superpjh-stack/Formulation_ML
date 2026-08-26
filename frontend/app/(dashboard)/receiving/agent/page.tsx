@@ -28,6 +28,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import { isSubmitKey } from "@/lib/ime";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { T } from "@/components/ui/tokens";
 import { askReceivingAgent } from "@/lib/koryo-api";
@@ -204,7 +205,7 @@ export default function ReceivingAgentPage() {
                 disabled={controlsDisabled}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  if (isSubmitKey(e)) {   // 한글 조합 확정 Enter 를 전송으로 오인하지 않는다
                     e.preventDefault();
                     void send(input);
                   }

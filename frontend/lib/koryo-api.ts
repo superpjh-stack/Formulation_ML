@@ -13,8 +13,11 @@
  * goal.md 3절이 이것을 이 프로젝트 최대 결함으로 지목했고, `api-contract.md` §5.2 ·
  * `ts-types.md` §7.1 이 제거를 지시했다. 실패는 전부 `ApiError` 로 던진다.
  *
- * 타임아웃은 **10초**다. 이전 3초는 NFR-P-03(배합 최적화 5초 허용)을 위반해
- * 정상 응답을 실패로 만들었다. `GET /data/export` 만 타임아웃이 없다 (§7.1 예외).
+ * 타임아웃 기본값은 **10초**다. 이전 3초는 NFR-P-03(배합 최적화 5초 허용)을 위반해
+ * 정상 응답을 실패로 만들었다. 예외는 둘뿐이다:
+ *   - `GET /data/export` — 타임아웃 없음 (§7.1)
+ *   - **LLM 을 호출하는 `/agents/*` 6개 — `AGENT_TIMEOUT_MS` 65초**
+ *     (LLM 응답이 5~20초라 10초로는 정상 응답이 전부 실패로 그려진다. 아래 상수 주석 참고)
  */
 
 // 기존 ML 계열은 `lib/api.ts` 가 정본이다. 여기서 재수출만 한다 (호출부 호환).
@@ -176,6 +179,26 @@ export const API_PREFIX = '/api/v1';
 /** NFR-P-03 이 배합 최적화에 5초를 허용한다. 3초는 정상 응답을 실패로 만들었다 */
 export const REQUEST_TIMEOUT_MS = 10_000;
 
+/**
+ * AI Agent 전용 타임아웃 — **LLM 을 호출하는 엔드포인트에만** 쓴다.
+ *
+ * 🔴 기본 10초를 그대로 두면 **정상 응답이 전부 실패로 그려진다.** LLM 응답은 5~20초다.
+ * 사용자에게는 "AI 가 고장났다" 로 보이는데 실제로는 잘 돌고 있다.
+ * 프로젝트 최대 결함이 "실패를 성공으로 위장" 이었다면 이건 그 **거울상** —
+ * "성공을 실패로 위장" 이다. 둘 다 화면이 사실과 다른 것을 말한다.
+ *
+ * **원칙: 클라이언트는 서버 상한보다 반드시 느슨하다** (`agent-architecture.md` §7.10.2).
+ * 그래야 끊는 주체가 서버가 되어 사용자가 `answer_status="timeout"` + 근거를 받는다.
+ * 클라이언트가 먼저 끊으면 연결만 끊기고 **아무 정보도 남지 않는다.**
+ *
+ * 계층: SQL 3초 · 검색 3초 · LLM 1회 30초 · **서버 전 구간 60초** · **프론트 65초**(여기).
+ *
+ * ⚠ `timeoutMs: null`(무한)을 쓰지 않는 이유 — `/data/export` 와 달리 응답이 안 오면
+ * 영원히 매달리고, 오류 문구가 `(timeoutMs ?? REQUEST_TIMEOUT_MS)` 를 참조해
+ * **"10초 초과" 라는 거짓 문구**가 나온다.
+ */
+export const AGENT_TIMEOUT_MS = 65_000;
+
 export type QueryValue = string | number | boolean | null | undefined;
 
 /** `undefined`·`null` 키는 통째로 뺀다 — 서버가 빈 문자열을 필터로 오해하지 않게 */
@@ -279,7 +302,8 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 
 const apiGet = <T>(path: string, timeoutMs?: number | null) =>
   request<T>(path, { method: 'GET', timeoutMs });
-const apiPost = <T>(path: string, body?: unknown) => request<T>(path, { method: 'POST', body });
+const apiPost = <T>(path: string, body?: unknown, timeoutMs?: number | null) =>
+  request<T>(path, { method: 'POST', body, timeoutMs });
 const apiPut = <T>(path: string, body?: unknown) => request<T>(path, { method: 'PUT', body });
 const apiPatch = <T>(path: string, body?: unknown) => request<T>(path, { method: 'PATCH', body });
 const apiDelete = <T>(path: string) => request<T>(path, { method: 'DELETE' });
@@ -935,35 +959,40 @@ export interface AgentAnswer {
 }
 
 export const askReceivingAgent = (question: string) =>
-  apiPost<AgentAnswer>('/agents/receiving', { question });
+  apiPost<AgentAnswer>('/agents/receiving', { question }, AGENT_TIMEOUT_MS);
 
 export const askMixingAgent = (question: string) =>
-  apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>('/agents/mixing', {
-    question,
-  });
+  apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>(
+    '/agents/mixing',
+    { question },
+    AGENT_TIMEOUT_MS
+  );
 
 export const askShippingAgent = (question: string) =>
-  apiPost<AgentAnswer & { matched_lots?: string[] }>('/agents/shipping', { question });
+  apiPost<AgentAnswer & { matched_lots?: string[] }>('/agents/shipping', { question }, AGENT_TIMEOUT_MS);
 
 export const askAgentQuery = (question: string, context?: string) =>
-  apiPost<AgentAnswer>('/agents/query', { question, context });
+  apiPost<AgentAnswer>('/agents/query', { question, context }, AGENT_TIMEOUT_MS);
 
 export const requestAgentAnalysis = (body: {
   topic: string;
   lot_id?: string;
   date_from?: string;
   date_to?: string;
-}) => apiPost<{ report: string; charts: unknown[]; latency_ms: number }>('/agents/analysis', body);
+}) => apiPost<{ report: string; charts: unknown[]; latency_ms: number }>('/agents/analysis', body, AGENT_TIMEOUT_MS);
 
 export const requestAgentDecision = (lotId: string) =>
   apiPost<{ root_causes: string[]; recommendations: string[]; confidence: number }>(
     '/agents/decision',
-    { lot_id: lotId }
+    { lot_id: lotId },
+    AGENT_TIMEOUT_MS
   );
 
+/** LLM 을 호출하지 않는 조회다 — 기본 타임아웃을 그대로 쓴다 (§7.10.5) */
 export const getAgentRecommendations = (q: PageQuery = {}) =>
   apiGet<Page<Record<string, unknown>>>(`/agents/recommendations${qs({ ...q })}`);
 
+/** LLM 을 호출하지 않는 조회다 — 기본 타임아웃을 그대로 쓴다 (§7.10.5) */
 export const getAgentLogs = (q: PageQuery & DateRangeQuery & { agent?: string } = {}) =>
   apiGet<Page<Record<string, unknown>>>(`/agents/logs${qs({ ...q })}`);
 
