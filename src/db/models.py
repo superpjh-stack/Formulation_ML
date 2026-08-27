@@ -29,6 +29,9 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import INET, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
+
+from src.agent.embed import EMBED_DIM
 
 
 class Base(DeclarativeBase):
@@ -535,14 +538,13 @@ class KpiTarget(Base):
 # ══════════════════════════════════════════════════════════════════════════
 # agent-architecture.md §6.7 doc_sources / doc_chunks — RAG 색인
 #
-# ⚠ **`embedding` · `embed_model` · `embed_dim` 이 여기에 없다.** 설계서 §6.7 은
-#   이 셋을 NOT NULL 로 규정하지만, 같은 문서 §8 미결항목 2번이 임베딩 모델과
-#   차원을 **미정**으로 두고 "`vector(N)` 의 N 은 DDL 에 고정되므로
-#   `AGENT_EMBED_MODEL` 을 확정한 뒤 마이그레이션을 생성해야 한다" 고 못박았다.
-#   차원을 지금 지어내면 모델 확정 시 **컬럼 타입 변경 + 전량 재색인**이다.
-#   그래서 청크 본문·제목·순번까지만 먼저 적재하고, 벡터 3컬럼은 모델 확정 후
-#   **후속 마이그레이션**으로 붙인다. 그때까지 `index_status` 는 `pending` 이며
-#   `GET /agents/health` 의 `index_ready` 는 false 다 (§3.5 D3).
+# 벡터 3컬럼은 **NULL 허용**이다. §6.7 은 NOT NULL 로 규정하지만 청크가 먼저
+# 적재되고 임베딩이 나중에 붙는 순서라 값 없이 NOT NULL 을 걸 수 없다. 0 벡터로
+# 채우면 차원만 맞는 무의미한 벡터가 색인에 들어가 AI 가 엉뚱한 청크를 근거로
+# 답한다. 전량 임베딩 후 후속 마이그레이션에서 조인다.
+#
+# `embedding is null` 인 행이 하나라도 있으면 `index_status` 는 `pending` 이다 —
+# 컬럼이 생겼다는 것과 검색이 된다는 것은 다르다 (§3.5 D3).
 # ══════════════════════════════════════════════════════════════════════════
 class DocSource(Base):
     __tablename__ = "doc_sources"
@@ -585,6 +587,11 @@ class DocChunk(Base):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     #: 컨텍스트 예산 계산용 **추정치**다 (chunker.count_tokens). 과금 근거가 아니다.
     token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: pgvector. 차원은 `src/agent/embed.py:EMBED_DIM` (=1024) 와 반드시 같다.
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(EMBED_DIM))
+    #: 🔴 모델이 바뀌면 전량 재색인이 필요하다는 사실을 스키마가 기억한다 (§2.11·§3.7)
+    embed_model: Mapped[str | None] = mapped_column(String(60))
+    embed_dim: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[dt.datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )
@@ -593,6 +600,16 @@ class DocChunk(Base):
 
     __table_args__ = (
         UniqueConstraint("source_id", "chunk_index", name="uq_doc_chunks_source_index"),
+        # §3.6 — 코사인 거리, m=16, ef_construction=64
+        Index(
+            "ix_doc_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_with={"m": 16, "ef_construction": 64},
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        # 재색인 대상 스캔용 — `embed_model` 이 현재 설정과 다른 행을 찾는다 (§3.7)
+        Index("ix_doc_chunks_embed_model", "embed_model"),
     )
 
 
