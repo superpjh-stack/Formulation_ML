@@ -532,6 +532,70 @@ class KpiTarget(Base):
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# agent-architecture.md §6.7 doc_sources / doc_chunks — RAG 색인
+#
+# ⚠ **`embedding` · `embed_model` · `embed_dim` 이 여기에 없다.** 설계서 §6.7 은
+#   이 셋을 NOT NULL 로 규정하지만, 같은 문서 §8 미결항목 2번이 임베딩 모델과
+#   차원을 **미정**으로 두고 "`vector(N)` 의 N 은 DDL 에 고정되므로
+#   `AGENT_EMBED_MODEL` 을 확정한 뒤 마이그레이션을 생성해야 한다" 고 못박았다.
+#   차원을 지금 지어내면 모델 확정 시 **컬럼 타입 변경 + 전량 재색인**이다.
+#   그래서 청크 본문·제목·순번까지만 먼저 적재하고, 벡터 3컬럼은 모델 확정 후
+#   **후속 마이그레이션**으로 붙인다. 그때까지 `index_status` 는 `pending` 이며
+#   `GET /agents/health` 의 `index_ready` 는 false 다 (§3.5 D3).
+# ══════════════════════════════════════════════════════════════════════════
+class DocSource(Base):
+    __tablename__ = "doc_sources"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(300), nullable=False)
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    scope: Mapped[str] = mapped_column(String(20), nullable=False, server_default="common")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    index_status: Mapped[str] = mapped_column(String(15), nullable=False, server_default="pending")
+    #: 실패 사유. 조용히 넘어가지 않는다 (§6.7)
+    index_error: Mapped[str | None] = mapped_column(String(300))
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    indexed_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+    updated_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    chunks: Mapped[list["DocChunk"]] = relationship(
+        back_populates="source", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("source_type", "source_key", name="uq_doc_sources_type_key"),
+    )
+
+
+class DocChunk(Base):
+    __tablename__ = "doc_chunks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    source_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("doc_sources.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: 인용 정밀도 — "문서 3쪽" 이 아니라 "WS-KS-001 §4.4 다." 를 가리킨다 (§3.6)
+    heading: Mapped[str | None] = mapped_column(String(200))
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 컨텍스트 예산 계산용 **추정치**다 (chunker.count_tokens). 과금 근거가 아니다.
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    source: Mapped[DocSource] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "chunk_index", name="uq_doc_chunks_source_index"),
+    )
+
+
 __all__ = [
     "Base",
     # SF-TD5 v1.0 — §3.1~§3.10
@@ -554,4 +618,7 @@ __all__ = [
     "SystemSetting",
     "MasterCode",
     "KpiTarget",
+    # agent-architecture.md §6.7 (CR-DB-007 부분 구현 — 벡터 컬럼 제외)
+    "DocSource",
+    "DocChunk",
 ]
