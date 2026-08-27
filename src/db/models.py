@@ -613,6 +613,183 @@ class DocChunk(Base):
     )
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# agent-architecture.md §6.3~§6.8 — AI Agent 실행 기록
+#
+# `agent_recommendations`(§6.9)는 만들지 않는다. FE-RT-41 은 선택 화면이고 v1.1
+# 게이트 밖이라 설계서가 축소안으로 명시했다 (§6.2).
+# ══════════════════════════════════════════════════════════════════════════
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    #: 사용자 삭제 시 세션은 남긴다 — 감사 대상이다
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(200))
+    started_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    last_active_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    message_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    closed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+
+    messages: Mapped[list["AgentMessage"]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (
+        Index("ix_agent_sessions_user_active", "user_id", "last_active_at"),
+        Index("ix_agent_sessions_scope", "scope"),
+    )
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("agent_sessions.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: `user` | `assistant`. **`system` 은 저장하지 않는다** — 룰은 `rule_hash` 로 재현한다
+    role: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: 🔴 **NULL 일 수 있다는 것이 설계 의도다** (§6.4). 답이 없으면 없는 것이고,
+    #:    빈 문자열로 위장하지 않는다. `rule_violation`·`no_evidence` 면 NULL 이다.
+    content: Mapped[str | None] = mapped_column(Text)
+    answer_status: Mapped[str | None] = mapped_column(String(20))
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    session: Mapped[AgentSession] = relationship(back_populates="messages")
+    citations: Mapped[list["AgentCitation"]] = relationship(
+        back_populates="message", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_agent_messages_session_seq"),
+        Index("ix_agent_messages_session_seq", "session_id", "seq"),
+    )
+
+
+class AgentCitation(Base):
+    __tablename__ = "agent_citations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("agent_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    ord: Mapped[int] = mapped_column(Integer, nullable=False)
+    #: `data` | `doc` | `model` — §7.11 사용자 노출 어휘 그대로.
+    #: `sql` 같은 구현 용어를 저장하지 않는다.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False)
+    #: 🔴 SET NULL — 재색인으로 청크가 교체돼도 **그때 무엇을 보고 답했는지**는
+    #:    `snippet` 에 남아야 한다. CASCADE 로 지우면 사후 검증이 불가능해진다.
+    chunk_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("doc_chunks.id", ondelete="SET NULL")
+    )
+    detail: Mapped[str | None] = mapped_column(String(200))
+    #: `data` 일 때 조회 건수. **NULL 이면 근거로 세지 않는다** (§7.11.2).
+    #: 0 은 유효한 값이다 — "조회했고 0건이었다" 는 근거다.
+    row_count: Mapped[int | None] = mapped_column(Integer)
+    source_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    label: Mapped[str] = mapped_column(String(200), nullable=False)
+    link: Mapped[str | None] = mapped_column(String(300))
+    snippet: Mapped[str | None] = mapped_column(Text)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(6, 4))
+
+    message: Mapped[AgentMessage] = relationship(back_populates="citations")
+
+    __table_args__ = (Index("ix_agent_citations_message_ord", "message_id", "ord"),)
+
+
+class AgentRun(Base):
+    """실행 로그 — `FR-AG-05` · 사업계획서 p.60 "사용 로그 기록·관리"."""
+
+    __tablename__ = "agent_runs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    #: 실패해 메시지가 없을 수도 있다
+    message_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_messages.id", ondelete="SET NULL")
+    )
+    session_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_sessions.id", ondelete="SET NULL")
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    scope: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: `sql` | `rag` | `tool` | `hybrid` | `refuse`
+    route: Mapped[str] = mapped_column(String(10), nullable=False)
+    answer_status: Mapped[str] = mapped_column(String(20), nullable=False)
+    provider: Mapped[str | None] = mapped_column(String(20))
+    #: 모델 ID 를 코드에 박지 않는 대신 여기 기록한다
+    model_id: Mapped[str | None] = mapped_column(String(60))
+    #: `RuleSnapshot` SHA-256 — **어떤 룰로 답했는지 재현**
+    rule_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_calls: Mapped[list | None] = mapped_column(JSONB)
+    retrieval: Mapped[dict | None] = mapped_column(JSONB)
+    latency_ms: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    total_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_input_tokens: Mapped[int | None] = mapped_column(Integer)
+    violations: Mapped[list | None] = mapped_column(JSONB)
+    regenerated: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false")
+    error_code: Mapped[str | None] = mapped_column(String(40))
+    #: 🔴 **외부로 나간 프롬프트 전문 (마스킹 후)** — §2.8 통제의 사후 검증.
+    #:    원본이 아니라 **실제 나간 것**을 저장한다. 90일 후 NULL 처리한다.
+    prompt_sent: Mapped[str | None] = mapped_column(Text)
+    #: 🔴 **버려진 답변 포함 원본** — 룰 위반으로 버린 답도 남는다 (§4.5.1)
+    raw_answer: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        Index("ix_agent_runs_created", "created_at"),
+        Index("ix_agent_runs_scope_created", "scope", "created_at"),
+        Index("ix_agent_runs_status", "answer_status"),
+        Index("ix_agent_runs_user_created", "user_id", "created_at"),
+    )
+
+
+class AgentFeedback(Base):
+    """👍/👎 — FE-RT-42 "정확도" 의 **유일한 실측 원천** (§6.8).
+
+    정답 라벨이 없는 자연어 답변에서 정확도를 계산할 방법은 사람의 평가밖에 없다.
+    자동 지표를 지어내지 않는다.
+    """
+
+    __tablename__ = "agent_feedback"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("agent_messages.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: 1 (👍) | -1 (👎)
+    rating: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(30))
+    comment: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        # 1인 1평가
+        UniqueConstraint("message_id", "user_id", name="uq_agent_feedback_message_user"),
+    )
+
+
 __all__ = [
     "Base",
     # SF-TD5 v1.0 — §3.1~§3.10
@@ -635,7 +812,12 @@ __all__ = [
     "SystemSetting",
     "MasterCode",
     "KpiTarget",
-    # agent-architecture.md §6.7 (CR-DB-007 부분 구현 — 벡터 컬럼 제외)
+    # agent-architecture.md §6.3~§6.8 (CR-DB-007)
     "DocSource",
     "DocChunk",
+    "AgentSession",
+    "AgentMessage",
+    "AgentCitation",
+    "AgentRun",
+    "AgentFeedback",
 ]

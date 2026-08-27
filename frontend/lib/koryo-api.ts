@@ -952,14 +952,76 @@ export const getTrainingDatasets = (q: PageQuery = {}) =>
 //     전 엔드포인트가 **501** 이다. 가짜 문자열로 "동작하는 것처럼" 만들지 마라.
 // ══════════════════════════════════════════════════════════════════════════════
 
-export interface AgentAnswer {
-  answer: string;
-  sources: string[];
-  latency_ms?: number;
+/**
+ * `agent-architecture.md` §7.5 — **닫힌 집합.** 새 값을 발명하지 마라.
+ *
+ *   ok              정상. `answer` 는 문자열, `sources` 1건 이상
+ *   no_evidence     근거 0건 — LLM 을 아예 부르지 않았다
+ *   out_of_scope    이 화면이 답할 수 없는 질문
+ *   timeout         생성 시간 초과
+ *   rule_violation  룰 검증 재위반 → 답변 폐기. `answer` 는 null 이고 근거만 남는다
+ */
+export type AgentAnswerStatus =
+  | 'ok'
+  | 'no_evidence'
+  | 'out_of_scope'
+  | 'timeout'
+  | 'rule_violation';
+
+/** §7.11 — `sources: string[]` 에서 승격됐다. `kind` 는 사용자 노출 어휘다. */
+export interface AgentCitation {
+  ord: number;
+  kind: 'data' | 'doc' | 'model';
+  label: string;
+  link?: string | null;
+  snippet?: string | null;
+  score?: number | null;
+  detail?: string | null;
+  /** `data` 일 때 조회 건수. **null 이면 근거로 세지 않는다.** 0 은 유효하다 */
+  count?: number | null;
 }
 
-export const askReceivingAgent = (question: string) =>
-  apiPost<AgentAnswer>('/agents/receiving', { question }, AGENT_TIMEOUT_MS);
+export interface AgentAnswer {
+  message_id: number | null;
+  session_id: number;
+  /** 🔴 **null 이 정상 값이다.** 빈 문자열로 위장하지 않는다 (§6.4) */
+  answer: string | null;
+  answer_status: AgentAnswerStatus;
+  sources: AgentCitation[];
+  violations: string[];
+  partial: boolean;
+  latency_ms: number;
+  provider: string | null;
+  model_id: string | null;
+}
+
+/** §7.3 — 화면이 "준비됨/미구성" 을 판단하는 **유일한 근거**. 키 값은 오지 않는다 */
+export interface AgentHealth {
+  provider: string | null;
+  model_id: string | null;
+  configured: boolean;
+  embed_model: string | null;
+  index_ready: boolean;
+  chunk_count: number;
+  failed_sources: number;
+  /** 미구성 사유 — 사람이 읽는 문장. 화면에 그대로 보여준다 */
+  reason: string | null;
+}
+
+export const getAgentHealth = () => apiGet<AgentHealth>('/agents/health');
+
+export const askReceivingAgent = (question: string, sessionId?: number) =>
+  apiPost<AgentAnswer>(
+    '/agents/receiving',
+    { question, session_id: sessionId ?? null },
+    AGENT_TIMEOUT_MS
+  );
+
+/** 👍/👎 — FE-RT-42 "정확도" 의 유일한 실측 원천 (§6.8) */
+export const submitAgentFeedback = (
+  messageId: number,
+  body: { rating: 1 | -1; reason?: string; comment?: string }
+) => apiPost<{ id: number }>(`/agents/messages/${messageId}/feedback`, body);
 
 export const askMixingAgent = (question: string) =>
   apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>(
@@ -968,8 +1030,12 @@ export const askMixingAgent = (question: string) =>
     AGENT_TIMEOUT_MS
   );
 
-export const askShippingAgent = (question: string) =>
-  apiPost<AgentAnswer & { matched_lots?: string[] }>('/agents/shipping', { question }, AGENT_TIMEOUT_MS);
+export const askShippingAgent = (question: string, sessionId?: number) =>
+  apiPost<AgentAnswer>(
+    '/agents/shipping',
+    { question, session_id: sessionId ?? null },
+    AGENT_TIMEOUT_MS
+  );
 
 export const askAgentQuery = (question: string, context?: string) =>
   apiPost<AgentAnswer>('/agents/query', { question, context }, AGENT_TIMEOUT_MS);

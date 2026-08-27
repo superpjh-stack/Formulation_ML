@@ -85,13 +85,12 @@ def assert_transfer_allowed(chunk_count: int) -> None:
 
 
 def get_provider() -> EmbeddingProvider:
-    """구현체는 `CR-ARCH-001` 승인 후 붙인다.
+    """실제 어댑터를 돌려준다.
 
-    지금 더미를 돌려주면 **차원만 맞는 무의미한 벡터**로 색인이 채워지고,
-    `index_ready:true` 가 되어 AI 가 엉뚱한 청크를 근거로 답한다. 그게 이 프로젝트가
-    가장 피하려는 실패다. 그래서 조용히 넘어가지 않고 여기서 멈춘다.
+    더미를 돌려주지 않는다. 더미면 **차원만 맞는 무의미한 벡터**로 색인이 채워지고
+    `index_ready:true` 가 되어 AI 가 엉뚱한 청크를 근거로 답한다. 키가 없으면
+    어댑터 생성 단계에서 `ProviderUnavailable` 이 난다 — 조용히 넘어가지 않는다.
     """
-    raise NotImplementedError(
-        "임베딩 제공자 구현이 없다. CR-ARCH-001 승인 후 "
-        f"{model_id()} 어댑터를 붙이고 dimension == {EMBED_DIM} 를 확인하라."
-    )
+    from src.agent.providers import get_embeddings
+
+    return get_embeddings()

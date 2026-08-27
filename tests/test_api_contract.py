@@ -8,6 +8,7 @@ DB 가 필요한 테스트는 접속 실패 시 `skip` 한다 — 순수 로직 
 from __future__ import annotations
 
 import datetime as dt
+import json
 import math
 
 import pytest
@@ -282,18 +283,61 @@ class TestErrorContract:
         })
         assert res.status_code == 400
 
-    def test_501_all_eight_agent_endpoints(self, client, viewer_headers):
-        """§8.10 — AI Agent 8종은 전부 501. **가짜 응답으로 채우지 마라.**"""
-        posts = ["/agents/receiving", "/agents/mixing", "/agents/shipping",
-                 "/agents/query", "/agents/analysis", "/agents/decision"]
-        gets = ["/agents/recommendations", "/agents/logs"]
+    def test_501_optional_agent_endpoints(self, client, viewer_headers):
+        """`agent-architecture.md` §7.2 — v1.1 게이트 **밖**의 5종은 501 을 유지한다.
+
+        입고(FE-RT-10)·출하(FE-RT-20) 는 필수로 승격돼 실동작한다. 나머지는
+        여전히 "준비 중" 이며 **가짜 응답으로 채우지 않는다.**
+        """
+        posts = ["/agents/mixing", "/agents/query", "/agents/analysis", "/agents/decision"]
         for path in posts:
             res = client.post(f"/api/v1{path}", json={}, headers=viewer_headers)
             assert res.status_code == 501, path
             assert res.json()["detail"] == "미구현 — v1 범위 밖"
-        for path in gets:
-            res = client.get(f"/api/v1{path}", headers=viewer_headers)
-            assert res.status_code == 501, path
+        res = client.get("/api/v1/agents/recommendations", headers=viewer_headers)
+        assert res.status_code == 501
+
+    def test_gate_agents_are_501_only_while_the_provider_is_unset(self, client, viewer_headers):
+        """§7.6 — 제공자 미설정은 **501**(미구현)이지 503(일시 장애)이 아니다.
+
+        503 은 "잠시 뒤 다시 해보라" 는 뜻이라 담당자가 무한 재시도를 한다.
+        키가 없는 것은 재시도로 해결되지 않는다.
+        """
+        for path in ("/agents/receiving", "/agents/shipping"):
+            res = client.post(f"/api/v1{path}", json={"question": "테스트"},
+                              headers=viewer_headers)
+            assert res.status_code in (200, 501), path
+            if res.status_code == 501:
+                assert res.json()["detail"] == "미구현 — v1 범위 밖"
+
+    def test_agent_logs_are_admin_only(self, client, viewer_headers):
+        """§7.1 — `agent_runs.prompt_sent` 에 외부 송출 전문이 들어간다.
+
+        다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
+        """
+        res = client.get("/api/v1/agents/logs", headers=viewer_headers)
+        assert res.status_code == 403
+
+    def test_agent_health_never_leaks_the_key(self, client, viewer_headers, monkeypatch):
+        """§2.9 — **키 값**·앞자리·길이를 절대 반환하지 않는다.
+
+        환경변수 **이름**(`ANTHROPIC_API_KEY`)은 `reason` 에 나와도 된다 —
+        담당자가 무엇을 설정해야 하는지 알아야 한다. 나오면 안 되는 것은 **값**이다.
+        그래서 가짜 키를 심어 두고 그 문자열이 응답 어디에도 없는지 본다.
+        """
+        secret = "sk-test-DO-NOT-LEAK-4f9a2c"
+        monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+        monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+        res = client.get("/api/v1/agents/health", headers=viewer_headers)
+        assert res.status_code == 200
+        body = res.json()
+        assert set(body) == {
+            "provider", "model_id", "configured", "embed_model",
+            "index_ready", "chunk_count", "failed_sources", "reason",
+        }
+        assert secret not in json.dumps(body, ensure_ascii=False)
+        assert secret not in res.text
 
     def test_501_training_datasets(self, client, viewer_headers):
         res = client.get("/api/v1/training-datasets", headers=viewer_headers)

@@ -71,9 +71,15 @@ export const ERROR_CONTRACT: Record<number, ErrorContractEntry> = {
   503: {
     status: 503,
     title: "서비스 일시 중단",
-    detail: "데이터베이스에 연결할 수 없습니다. 잠시 후 다시 시도하고, 계속되면 시스템 관리자에게 알려주세요.",
+    /**
+     * **원인을 단정하지 않는다.** 초판은 "데이터베이스에 연결할 수 없습니다" 라고
+     * 못박았는데, `agent-architecture.md` §7.6 이 **LLM 장애·레이트리밋·토큰 상한**도
+     * 같은 503 을 쓰기로 하면서(새 오류 코드를 만들지 않기 위해) 문구가 틀리게 됐다.
+     * AI Agent 가 죽었는데 화면이 DB 를 보라고 하면 담당자가 엉뚱한 곳을 뒤진다.
+     */
+    detail: "서버가 일시적으로 응답할 수 없습니다. 잠시 후 다시 시도하고, 계속되면 시스템 관리자에게 알려주세요.",
     action: "retry",
-    source: "SF-TD4 §5 / api-contract §5",
+    source: "SF-TD4 §5 / api-contract §5 / agent-architecture §7.6",
   },
 };
 

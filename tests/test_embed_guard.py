@@ -46,10 +46,14 @@ def test_ambiguous_values_do_not_open_the_gate(monkeypatch, value):
         embed.assert_transfer_allowed(1)
 
 
-def test_provider_is_not_silently_stubbed():
+def test_provider_is_not_silently_stubbed(monkeypatch):
     """더미 제공자를 돌려주면 차원만 맞는 무의미한 벡터로 색인이 채워지고
-    `index_ready:true` 가 되어 AI 가 엉뚱한 청크를 근거로 답한다."""
-    with pytest.raises(NotImplementedError):
+    `index_ready:true` 가 되어 AI 가 엉뚱한 청크를 근거로 답한다.
+
+    키가 없으면 **어댑터 생성 단계에서 멈춘다.** 빈 벡터를 만들지 않는다.
+    """
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    with pytest.raises(RuntimeError):
         embed.get_provider()
 
 

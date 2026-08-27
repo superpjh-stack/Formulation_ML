@@ -36,6 +36,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+# `.env` 를 **다른 import 보다 먼저** 읽는다. `src/agent/config.py` 등이 모듈
+# 수준에서 `os.getenv` 를 부르므로, 나중에 읽으면 값이 이미 굳은 뒤다.
+# `override=False` — 셸에서 명시적으로 준 값이 파일보다 우선한다.
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(Path(__file__).parent / ".env", override=False)
+
 import pandas as pd
 from fastapi import APIRouter, Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware

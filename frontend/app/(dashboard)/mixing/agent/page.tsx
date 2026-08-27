@@ -30,7 +30,7 @@ import Link from "next/link";
 import { isSubmitKey } from "@/lib/ime";
 import { StatusBadge } from "@/components/ui/StatusBadge";
 import { T } from "@/components/ui/tokens";
-import { askMixingAgent } from "@/lib/koryo-api";
+import { askMixingAgent, type AgentCitation } from "@/lib/koryo-api";
 import { resolveError } from "@/lib/error-contract";
 import { COMPONENT_BOUNDS } from "@/types/api";
 import { NotImplementedBanner, PageHeader, PageShell, num } from "../../_g1/ui";
@@ -69,11 +69,16 @@ type ChatRole = "user" | "agent" | "system";
 interface ChatMessage {
   id: string;
   role: ChatRole;
-  text: string;
+  /**
+   * 🔴 **null 이 정상 값이다** (`agent-architecture.md` §6.4).
+   * 근거가 없거나 룰 위반으로 답변을 폐기하면 서버가 null 을 준다.
+   * 빈 문자열로 위장하지 않는다.
+   */
+  text: string | null;
   /** `HH:mm` — 클라이언트 생성. 안내 메시지는 비워 둔다 (SSR 하이드레이션 불일치 방지) */
   time: string;
-  /** 응답 `sources[]`. 비어 있으면 출처 영역을 숨긴다 (환각 방지) */
-  sources?: string[];
+  /** §7.11 — `string[]` 에서 `Citation[]` 으로 승격됐다 */
+  sources?: AgentCitation[];
   /**
    * 응답의 **선택 필드**다 (`recommended_ratios?`).
    * 없는 답변에는 카드를 렌더하지 않는다 — 빈 카드 금지 (plan-g1 §9).
@@ -545,9 +550,11 @@ function MessageBubble({ message }: { message: ChatMessage }) {
             }}
           >
             <span style={{ fontSize: 10.5, fontWeight: 700, color: T.textMuted }}>근거 출처</span>
-            {message.sources.map((s, i) => (
-              <span key={`${s}-${i}`} style={{ fontSize: 11.5, color: T.textSub, lineHeight: 1.5 }}>
-                • {s}
+            {message.sources.map((s) => (
+              <span key={s.ord} style={{ fontSize: 11.5, color: T.textSub, lineHeight: 1.5 }}>
+                • {s.label}
+                {/* 0 건도 근거다 — "조회했고 0건이었다" 는 사실이다 (§7.11.2) */}
+                {s.count !== null && s.count !== undefined && ` (${s.count}건)`}
               </span>
             ))}
           </div>
