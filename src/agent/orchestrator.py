@@ -87,7 +87,13 @@ SYSTEM_BASE = """당신은 ㈜고려솔더 제조 현장의 질문에 답하는 
 3. 수치를 말할 때는 **어느 문서·어느 조회에서 나왔는지** 본문에 밝힌다.
 4. 문서의 값에 `[현장확정]` 표시가 있으면 **잠정치라는 사실을 함께 말한다.**
 5. 답은 한국어로, 현장에서 바로 읽을 수 있게 짧고 구체적으로 쓴다.
-6. 근거에 없는 문서번호를 지어내 인용하지 마라."""
+6. 근거에 없는 문서번호를 지어내 인용하지 마라.
+7. **건수·합계는 목록을 직접 세지 마라.** 조회 결과의 `meta.row_count` 가 정본이다.
+   목록은 지면 때문에 일부만 실릴 수 있고, 그때 세면 실제보다 적게 답하게 된다.
+8. 근거에 **금지·필수 조치**가 붙어 있으면 반드시 함께 전달한다.
+   ("반드시 재측정한다", "…만으로 판정 금지", "승인 후 진행" 같은 것)
+   계산값이나 조회값만 떼어 주면 현장에서 그 값만 보고 다음 공정으로 넘어간다.
+9. 기간이 명시되지 않은 조회를 했다면 **어느 기간으로 조회했는지 답변에 밝혀라.**"""
 
 
 def _tool_schema(spec) -> dict[str, Any]:
@@ -131,8 +137,7 @@ def _evidence_block(
             wire = redaction.to_wire(tr.result, book)
             redaction.assert_wire_safe(wire)      # §2.8.4 단일 출구
             dropped.extend(wire.dropped)
-            body = json.dumps(wire.fields, ensure_ascii=False, default=str)[:2500]
-            parts.append(f"· {tr.tool}({_compact(tr.args)})\n{body}")
+            parts.append(f"· {tr.tool}({_compact(tr.args)})\n{_render_rows(wire.fields)}")
 
     if hits:
         # 🔴 문서 청크도 외부로 나간다. 임베딩과 같은 승인 게이트를 적용한다 —
@@ -147,6 +152,60 @@ def _evidence_block(
 
 def _compact(args: dict) -> str:
     return ", ".join(f"{k}={v}" for k, v in args.items() if v is not None)
+
+
+#: 도구 1개가 프롬프트에서 쓸 수 있는 **행 목록** 예산 (자). `meta` 는 여기서 제외된다.
+ROWS_BUDGET = 2500
+
+
+def _render_rows(fields: dict) -> str:
+    """도구 결과를 프롬프트 문자열로 만든다. **조용히 자르지 않는다.**
+
+    🔴 초판은 `json.dumps(fields)[:2500]` 이었다. 그래서 이런 일이 났다
+    (실측 2026-08-27, `claim_search` analyzing 43건):
+
+        직렬화 8,022자 → 2,500자로 잘림 → `meta.row_count: 43` 이 통째로 사라짐
+        → LLM 은 잘린 줄 모르고 **보이는 행만 세서 "14건" 이라고 답했다.**
+
+    실제로는 43건이다. 도구는 정확한 값을 냈는데 오케스트레이터가 잘라서 틀린
+    답이 나갔다 — 자르는 것 자체보다 **잘랐다고 말하지 않은 것**이 문제다.
+
+    그래서 셋을 지킨다.
+      1. `meta` 를 **맨 앞에** 온전히 싣는다. 작고 권위 있는 값이다(`row_count`).
+      2. 행 목록은 예산 안에서 자르되, **몇 건 중 몇 건인지 명시**한다.
+      3. 잘렸으면 "건수는 meta.row_count 를 쓰라" 고 못박는다.
+    """
+    meta = fields.get("meta")
+    lines: list[str] = []
+    if meta is not None:
+        lines.append(f"meta = {json.dumps(meta, ensure_ascii=False, default=str)}")
+
+    for key, value in fields.items():
+        if key == "meta":
+            continue
+        if not isinstance(value, list):
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=False, default=str)}")
+            continue
+
+        total = len(value)
+        shown, used = [], 0
+        for row in value:
+            text = json.dumps(row, ensure_ascii=False, default=str)
+            if used + len(text) > ROWS_BUDGET and shown:
+                break
+            shown.append(text)
+            used += len(text)
+
+        header = f"{key} — 전체 {total}건"
+        if len(shown) < total:
+            header += (
+                f", 아래에 {len(shown)}건만 표시함. "
+                "🔴 건수를 답할 때는 이 목록을 세지 말고 meta 의 row_count 를 써라"
+            )
+        lines.append(header)
+        lines.extend(f"  {s}" for s in shown)
+
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════════════

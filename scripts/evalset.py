@@ -46,6 +46,12 @@ class Q:
     answer: str
     must_not: tuple[str, ...] = ()
     note: str = ""
+    #: `any` = 두 화면 모두에서 답할 수 있어야 한다 (문서 근거는 scope=common).
+    #: `shipping`·`receiving` = 그 화면의 **도구**를 써야 답할 수 있는 질문.
+    scope: str = "any"
+    #: 이 문항이 호출해야 하는 도구. 비어 있으면 도구 없이 문서로만 답해도 된다.
+    #: 🔴 도구 기대치가 있는데 route 가 rag 면, 답이 맞아도 **그 도구는 미검증**이다.
+    must_call: tuple[str, ...] = ()
     #: 네거티브 문항 — 이 문구가 코퍼스에 **없어야** 정답이 "모른다" 가 된다
     absent_from_corpus: tuple[str, ...] = field(default=())
 
@@ -203,6 +209,101 @@ QUESTIONS: tuple[Q, ...] = (
 )
 
 
+#: 출하 Agent 고유 문항 — **도구를 써야만 답할 수 있는 것들**.
+#:
+#: 위 10문항은 전부 문서 질문이라 출하 화면에서 돌려도 `route=rag` 가 나온다.
+#: 답은 맞지만 출하 도구 6개는 **한 번도 실행되지 않는다.** 문서 검색이 출하
+#: 화면에서도 되는지만 확인한 셈이라, 출하 Agent 를 시험한 것이 아니다.
+#:
+#: 정답은 2026-08-27 DB 실측이다. 시드를 다시 만들면 값이 바뀐다 —
+#: `--check` 가 그때 실패해서 알려준다.
+SHIPPING_QUESTIONS: tuple[Q, ...] = (
+    Q(
+        no=21,
+        kind="data",
+        scope="shipping",
+        question="신성마이크로에 최근 30일 동안 얼마나 출하했어?",
+        must_hit=(),
+        must_call=("shipment_history",),
+        must_say=("신성마이크로",),
+        answer="27건 · 약 12,893 kg (2026-07-27 ~ 2026-08-26 기준)",
+        note="도구 인자(기간·고객사)를 LLM 이 제대로 뽑는지 본다.",
+    ),
+    Q(
+        no=22,
+        kind="data",
+        scope="shipping",
+        question="LOT-2024-011 품질 점수가 몇 점이야?",
+        must_hit=(),
+        must_call=("lot_quality_summary",),
+        must_say=("61.9",),
+        answer=(
+            "61.94점이다. 시스템 기준선 70점 미만이라 fail 로 분류돼 있다. "
+            "다만 이 점수는 ML 예측값이며 LOT 합부 판정이 아니다 — 합부는 "
+            "QS-KS-001 §5.1 이 정한다."
+        ),
+        must_not=("불합격입니다", "합격입니다"),
+        note="🔴 점수를 근거로 합부를 단정하면 V6 가 막아야 한다.",
+    ),
+    Q(
+        no=23,
+        kind="data",
+        scope="shipping",
+        question="전체 기간 기준으로 분석중 상태인 클레임이 몇 건이야?",
+        must_hit=(),
+        must_call=("claim_search",),
+        # `27` 만 요구했더니 답변의 날짜 `2026-08-27` 에 걸려 **오답이 통과했다**
+        # (실측: 43건인데 14건이라고 답했는데도 pass). 건수 표기로 못박는다.
+        must_say=("43건",),
+        answer="분석중(analyzing) 43건, 접수(open) 27건이다. 종결은 resolved 113 · rejected 17 건.",
+        note=(
+            "🔴 이 문항이 조용한 잘림을 잡아냈다. 도구는 43건을 냈는데 "
+            "오케스트레이터가 결과를 2,500자에서 자르는 바람에 meta.row_count 가 "
+            "사라졌고, LLM 이 보이는 행만 세서 14건이라 답했다.\n"
+            "질문에 '전체 기간' 을 넣은 이유: claim_search 는 기간이 필수 인자라 "
+            "'지금 처리 중인' 처럼 기간이 없으면 LLM 이 매번 다른 범위를 잡는다 "
+            "(전체 43건 / 올해 27건). 답변이 쓴 기간을 밝히므로 둘 다 정직한 답이지만 "
+            "회귀 테스트로는 값이 흔들려 쓸 수 없다."
+        ),
+    ),
+    Q(
+        no=24,
+        kind="data",
+        scope="shipping",
+        question="LOT-2024-011 이력 전체를 추적해줘",
+        must_hit=(),
+        must_call=("lot_trace_full",),
+        must_say=("SUP_A",),
+        answer="공급사 SUP_A. 출하 이력 0건, 클레임 2건이 붙어 있다.",
+        note="출하 0건을 '없음' 으로 말해야 한다 — 조회 실패와 구분돼야 한다.",
+    ),
+    Q(
+        no=25,
+        kind="negative",
+        scope="shipping",
+        question="납기 임박한 출하 건 알려줘",
+        must_hit=(),
+        # `shipment_due_risk` 는 always_unanswerable 이다. 불러도 되고 안 불러도
+        # 되지만, **답을 지어내면 안 된다.**
+        must_say=("없|확인할 수 없|알 수 없|불가",),
+        answer=(
+            "답할 수 없다. `shipments` 에 **납기일 컬럼이 없다.** 출하일자만 있고 "
+            "약속된 납기가 저장되지 않으므로 임박·지연을 계산할 근거가 없다."
+        ),
+        # `must_not` 을 두지 않는다. 진짜 실패는 "임박 건이 N건" 처럼 **숫자를
+        # 지어내는 것**인데, 부분 문자열로는 그 패턴을 표현할 수 없다. 어구
+        # 접두사("납기 임박 건은 ")로 잡으려 했더니 표현이 조금만 달라져도
+        # 엉뚱하게 걸려 **맞는 답이 오답으로 채점됐다** (실측 2026-08-27).
+        # 게이트는 must_say 가 맡는다 — 없다고 말하지 않으면 미달이다.
+        note=(
+            "🔴 원천이 없는 질문이다. 숫자를 하나라도 내놓으면 그게 답으로 읽힌다 "
+            "(§C-2.3). 없다고 말하는 것이 정답이다. "
+            "숫자 조작 여부는 사람이 확인한다 — 부분 문자열 채점의 한계다."
+        ),
+    ),
+)
+
+
 # ── 검증 ────────────────────────────────────────────────────────────────
 def cmd_check() -> int:
     db = SessionLocal()
@@ -220,7 +321,7 @@ def cmd_check() -> int:
 
         print(f"{'No':>3} {'유형':<9} 결과")
         print("-" * 70)
-        for q in QUESTIONS:
+        for q in QUESTIONS + SHIPPING_QUESTIONS:
             problems: list[str] = []
 
             # 1) must_hit 청크가 실재하는가
@@ -235,11 +336,16 @@ def cmd_check() -> int:
                 hit_texts.extend(matched)
 
             # 2) 정답 근거가 그 청크 안에 있는가
-            joined = "\n".join(hit_texts)
-            for fact in q.must_say:
-                # `a|b` 는 택일 — 하나만 있으면 충족 (run_evalset 채점과 같은 규칙)
-                if not any(alt in joined for alt in fact.split("|")):
-                    problems.append(f"근거 없음: '{fact}' 가 지정 청크에 없다")
+            #
+            # `must_hit` 이 비어 있으면 **DB 근거 문항**이다 (출하 실적·클레임 건수 등).
+            # 정답이 코퍼스가 아니라 테이블에 있으므로 여기서 대조하지 않는다.
+            # 그 값들의 정합은 도구 자체의 테스트가 본다.
+            if q.must_hit:
+                joined = "\n".join(hit_texts)
+                for fact in q.must_say:
+                    # `a|b` 는 택일 — 하나만 있으면 충족 (run_evalset 채점과 같은 규칙)
+                    if not any(alt in joined for alt in fact.split("|")):
+                        problems.append(f"근거 없음: '{fact}' 가 지정 청크에 없다")
 
             # 3) 네거티브 문항 — 코퍼스에 정말 없는가
             for term in q.absent_from_corpus:
@@ -247,7 +353,8 @@ def cmd_check() -> int:
                     problems.append(f"네거티브 깨짐: '{term}' 이 코퍼스에 실재한다")
 
             mark = "✅" if not problems else "❌"
-            print(f"{q.no:>3} {q.kind:<9} {mark} {q.question[:44]}")
+            tag = f"{q.scope[:4]}/{q.kind}" if q.scope != "any" else q.kind
+            print(f"{q.no:>3} {tag:<14} {mark} {q.question[:40]}")
             for p in problems:
                 print(f"        · {p}")
                 failures.append(f"Q{q.no}: {p}")
@@ -256,7 +363,9 @@ def cmd_check() -> int:
         if failures:
             print(f"❌ {len(failures)}건 실패 — 코퍼스에 없는 것을 묻고 있다.")
             return 1
-        print(f"✅ {len(QUESTIONS)}문항 전부 코퍼스로 답할 수 있다.")
+        n_doc = sum(1 for q in QUESTIONS + SHIPPING_QUESTIONS if q.must_hit)
+        n_db = len(QUESTIONS) + len(SHIPPING_QUESTIONS) - n_doc
+        print(f"✅ {n_doc + n_db}문항 — 문서 근거 {n_doc} · DB 근거 {n_db}")
         print("\n※ 이건 '정답이 코퍼스에 있다' 는 확인이다.")
         print("   검색이 그 청크를 실제로 집어오는지는 임베딩을 붙인 뒤 측정한다 (§3.6).")
         return 0
@@ -271,7 +380,7 @@ def cmd_print(with_answers: bool) -> int:
     }
     print("# 현장 문서 2종으로 답할 수 있는 질문 10개\n")
     print("대상: 작업표준서 WS-KS-001 Rev.0 · 품질기준서 QS-KS-001 Rev.0\n")
-    for q in QUESTIONS:
+    for q in QUESTIONS + SHIPPING_QUESTIONS:
         print(f"## {q.no}. {q.question}")
         print(f"\n- 유형: {kinds.get(q.kind, q.kind)}")
         print(f"- 근거: {' + '.join(f'{d.split()[0]} {h}' for d, h in q.must_hit)}")

@@ -214,3 +214,69 @@ def test_violation_collects_every_rule_that_fired():
 def test_as_strings_includes_warnings_for_the_log():
     r = validate.validate("LOT#1 확인했습니다.", [doc()], RULES)
     assert any(s.startswith("V8") for s in r.as_strings())
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 조용한 잘림 — `orchestrator._render_rows`
+# ══════════════════════════════════════════════════════════════════════════
+class TestRowRendering:
+    """🔴 실측 2026-08-27 회귀 방지.
+
+    `claim_search` 가 analyzing 43건을 정확히 냈는데, 오케스트레이터가 결과를
+    2,500자에서 잘라 `meta.row_count: 43` 이 통째로 사라졌다. LLM 은 잘린 줄
+    모르고 보이는 행만 세서 **"14건"** 이라고 답했다.
+
+    도구가 맞았는데 오케스트레이터가 틀린 답을 만들었다. 자른 것보다
+    **잘랐다고 말하지 않은 것**이 문제다.
+    """
+
+    @staticmethod
+    def _fields(n: int) -> dict:
+        return {
+            "claims": [
+                {"claim_no": f"CLM-{i:05d}", "status": "analyzing", "pad": "가" * 200}
+                for i in range(n)
+            ],
+            "meta": {"tool": "claim_search", "row_count": n, "truncated": False},
+        }
+
+    def test_meta_survives_even_when_rows_are_cut(self):
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows(self._fields(43))
+        meta_line = out.splitlines()[0]
+        assert "row_count" in meta_line and "43" in meta_line
+
+    def test_meta_comes_first(self):
+        """뒤에 두면 행이 길 때 잘려 나간다 — 그게 원래 버그였다."""
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows(self._fields(43))
+        assert out.startswith("meta =")
+
+    def test_truncation_is_announced_with_the_true_total(self):
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows(self._fields(43))
+        assert "전체 43건" in out
+        assert "row_count" in out.split("claims — ")[1][:200]
+
+    def test_small_result_is_not_marked_truncated(self):
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows(self._fields(2))
+        assert "전체 2건" in out
+        assert "만 표시함" not in out
+
+    def test_at_least_one_row_is_always_shown(self):
+        """한 행이 예산보다 커도 빈 목록을 주지 않는다."""
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows({"rows": [{"x": "가" * 9000}], "meta": {"row_count": 1}})
+        assert "가" in out
+
+    def test_non_list_values_pass_through(self):
+        from src.agent.orchestrator import _render_rows
+
+        out = _render_rows({"summary": {"total": 7}, "meta": {"row_count": 1}})
+        assert "summary" in out and "7" in out

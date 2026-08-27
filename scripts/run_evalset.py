@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.agent import orchestrator
 from src.db.session import SessionLocal
-from scripts.evalset import QUESTIONS
+from scripts.evalset import QUESTIONS, SHIPPING_QUESTIONS
 
 
 def grade(q, outcome) -> tuple[str, list[str]]:
@@ -44,14 +45,22 @@ def grade(q, outcome) -> tuple[str, list[str]]:
     labels = " ".join(e.label for e in outcome.evidence)
     unhit = [h for _, h in q.must_hit if h.lower() not in labels.lower()]
 
+    # 🔴 도구 기대치. 답이 맞아도 도구를 안 불렀으면 **그 도구는 미검증**이다.
+    #    문서 질문만 돌리면 route 가 전부 rag 로 나오고, 화면 고유 기능은
+    #    한 번도 실행되지 않은 채 "전부 통과" 로 보인다.
+    called = {c.get("tool") for c in outcome.tool_calls}
+    uncalled = [name for name in q.must_call if name not in called]
+
     if wrong:
         problems.append(f"오답 문구: {', '.join(wrong)}")
     if missing:
         problems.append(f"누락: {', '.join(missing)}")
     if unhit:
         problems.append(f"근거 미검색: {', '.join(unhit)}")
+    if uncalled:
+        problems.append(f"도구 미호출: {', '.join(uncalled)} (route={outcome.route})")
 
-    if wrong:
+    if wrong or uncalled:
         return "fail", problems
     if missing:
         return "partial", problems
@@ -63,17 +72,29 @@ def main() -> int:
     ap.add_argument("--scope", default="receiving", choices=("receiving", "shipping"))
     ap.add_argument("--role", default="admin")
     ap.add_argument("--only", help="문항 번호 (쉼표 구분)")
+    # 🔴 레이트리밋 회피. 실측 2026-08-27: 이 조직의 gpt-4.1 은 **30,000 TPM** 이고
+    #    질문 1개가 입력 4~5천 토큰(청크 8개 + 도구 결과)을 쓴다. 쉬지 않고 돌리면
+    #    6문항쯤에서 429 가 난다. 운영 경로는 429 를 503 으로 내보내지만(§7.6),
+    #    배치 스크립트는 그냥 천천히 가는 것이 맞다.
+    ap.add_argument("--delay", type=float, default=10.0,
+                    help="문항 사이 대기 초 (기본 10 — 30k TPM 기준)")
     args = ap.parse_args()
 
-    picked = QUESTIONS
+    # 문서 문항(scope="any")은 두 화면 모두, 도구 문항은 해당 화면에서만 돈다.
+    picked = tuple(
+        q for q in QUESTIONS + SHIPPING_QUESTIONS
+        if q.scope in ("any", args.scope)
+    )
     if args.only:
         wanted = {int(x) for x in args.only.split(",")}
-        picked = tuple(q for q in QUESTIONS if q.no in wanted)
+        picked = tuple(q for q in picked if q.no in wanted)
 
     db = SessionLocal()
     tally: dict[str, int] = {}
     try:
-        for q in picked:
+        for i, q in enumerate(picked):
+            if i and args.delay:
+                time.sleep(args.delay)
             outcome = orchestrator.answer(
                 db, question=q.question, scope=args.scope, role=args.role
             )
@@ -82,8 +103,9 @@ def main() -> int:
 
             mark = {"pass": "✅", "partial": "🟡", "fail": "❌"}.get(verdict, "⚠")
             print(f"\n{mark} [{q.no}] {q.question}")
+            tools = ",".join(c.get("tool", "?") for c in outcome.tool_calls) or "없음"
             print(f"   {outcome.answer_status} · {outcome.total_ms}ms · "
-                  f"근거 {len(outcome.evidence)}건 · route={outcome.route}"
+                  f"근거 {len(outcome.evidence)}건 · route={outcome.route} · 도구 {tools}"
                   + (" · 재생성" if outcome.regenerated else ""))
             body = (outcome.answer or "(답변 없음)").replace("\n", "\n   ")
             print(f"   {body[:400]}")
