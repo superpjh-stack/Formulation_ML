@@ -64,6 +64,32 @@ def model_id() -> str:
     return os.getenv("AGENT_EMBED_MODEL", DEFAULT_MODEL)
 
 
+def text_for(source_title: str, heading: str | None, content: str) -> str:
+    """임베딩에 넣을 문자열 — **제목 경로를 본문 앞에 붙인다.**
+
+    붙이지 않으면 표 청크가 자연어 질문에 걸리지 않는다. 이 문서는 내용의
+    대부분이 표인데, 파이프로 눕힌 표(`5 | 설정 온도까지 승온한다 | ...`)는
+    "용해할 때 몇 분이나 유지해야 해?" 같은 문장과 의미가 잘 붙지 않는다.
+    제목("4.2 WS-02 용해 > 다. 작업 순서 및 관리 기준")이 그 다리를 놓는다.
+
+    평가셋 10문항 실측 (2026-08-27, text-embedding-3-large/1024):
+
+        문항                              본문만    제목포함
+        용해 유지 시간                       12위      8위
+        배합 편차 50% 초과 조치                6위      2위
+        XRF 기록 보존기간                     2위      3위
+        품질 점수 70점 합격 여부                3위      4위
+
+    상위권 문항이 한 계단씩 밀리는 대신 **하위권이 크게 올라온다.** 이미 1~3위인
+    문항은 어차피 k 안에 들어오므로 손해가 없고, k 밖으로 나가 있던 것이 들어온다.
+
+    ⚠ `doc_chunks.content` 는 그대로 둔다 — 인용 원문을 바꾸지 않는다.
+      바꾸는 것은 **임베딩에 넣는 문자열**뿐이다.
+    """
+    prefix = f"{source_title} · {heading}" if heading else source_title
+    return f"{prefix}\n{content}"
+
+
 def external_transfer_approved() -> bool:
     return os.getenv(APPROVAL_ENV, "").strip() in {"1", "true", "yes"}
 

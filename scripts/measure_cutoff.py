@@ -32,6 +32,17 @@ from src.agent import embed, providers, retrieval
 from src.db.session import SessionLocal
 from scripts.evalset import QUESTIONS
 
+#: 코퍼스가 답할 수 없는 질문. 컷오프가 실제로 막아야 하는 것은 이쪽이다.
+#: 앞 세 개는 명백히 무관하고, 뒤 두 개는 **사내 질문이지만 이 문서에 없는 것**이라
+#: 유사도가 어중간하게 높다 — 컷오프의 진짜 시험대는 이 두 개다.
+OFF_TOPIC: tuple[str, ...] = (
+    "오늘 점심 뭐 먹지?",
+    "서울 날씨 어때?",
+    "파이썬으로 정렬하는 법 알려줘",
+    "휴가 언제 쓸 수 있어?",
+    "우리 회사 주가 얼마야?",
+)
+
 
 def main() -> int:
     db = SessionLocal()
@@ -87,13 +98,52 @@ def main() -> int:
             suggested = round((lo_right + hi_wrong) / 2, 3)
             print(f"\n두 분포가 겹치지 않는다. 권장 컷오프: **{suggested}**")
             print(f"  .env 에  AGENT_SIMILARITY_CUTOFF={suggested}")
+            return 0
+
+        print(
+            f"\n⚠ 코퍼스 안에서는 두 분포가 겹친다 (정답 최소 {lo_right:.4f} ≤ 오답 최대 {hi_wrong:.4f}).\n"
+            "  **컷오프로 코퍼스 내부의 옳고 그름을 가릴 수는 없다.** 같은 문서에서 나온\n"
+            "  청크들이라 서로 비슷한 것이 당연하고, 이건 컷오프가 아니라 검색 순위와\n"
+            "  LLM·검증기가 맡을 일이다.\n"
+            "\n  컷오프가 실제로 하는 일은 **주제 이탈 차단**이다. 그걸 재 본다."
+        )
+
+        # ── 주제 이탈 질문 ────────────────────────────────────────────────
+        print(f"\n{'최고유사도':>10}  주제 이탈 질문")
+        print("-" * 78)
+        off_top: list[float] = []
+        for q in OFF_TOPIC:
+            hits = retrieval.search(db, embedder.embed_query(q), k=5).hits
+            top = max((h.score for h in hits), default=0.0)
+            off_top.append(top)
+            print(f"{top:>10.4f}  {q}")
+
+        worst_off = max(off_top)
+        print("-" * 78)
+        print(f"\n주제 이탈 최고 {worst_off:.4f}  vs  코퍼스 정답 최소 {lo_right:.4f}")
+
+        if worst_off < lo_right:
+            suggested = round((worst_off + lo_right) / 2, 3)
+            print(f"\n권장 컷오프: **{suggested}**")
+            print("  이 값은 주제 이탈 질문을 막고, 평가셋 정답 청크는 하나도 버리지 않는다.")
         else:
+            # 정답을 하나도 버리지 않는 **가장 높은** 값을 고른다.
+            # 더 낮추면 막을 수 있던 이탈 질문까지 통과하고, 더 높이면 정답이 잘린다.
+            safe = round(lo_right - 0.005, 3)
+            blocked = [q for q, s in zip(OFF_TOPIC, off_top) if s < safe]
+            passed = [f"{q}({s:.3f})" for q, s in zip(OFF_TOPIC, off_top) if s >= safe]
             print(
-                f"\n⚠ 두 분포가 겹친다 (정답 최소 {lo_right:.4f} ≤ 오답 최대 {hi_wrong:.4f}).\n"
-                "  어떤 값을 골라도 정답을 버리거나 오답을 통과시킨다.\n"
-                "  컷오프로 해결할 문제가 아니다 — 청킹이나 임베딩 모델을 먼저 본다.\n"
-                f"  굳이 건다면 정답 최소값보다 낮게: {round(lo_right - 0.02, 3)}"
+                f"\n⚠ 주제 이탈 중 일부가 정답 최소값보다 높다. 완전히 가르는 값은 없다.\n"
+                f"\n권장 컷오프: **{safe}** — 정답을 버리지 않는 **가장 높은** 값이다.\n"
+                "  더 낮추면 막을 수 있던 이탈 질문까지 통과하고, 더 높이면 정답이 잘린다.\n"
+                "  정답 청크를 버리면 답할 수 있는 질문에 '모르겠다' 가 나가고, 그건\n"
+                "  사용자가 고칠 방법이 없다. 반대로 이탈이 통과하는 것은 LLM 이\n"
+                "  '확인할 수 없습니다' 로 처리하고 V2·V7 검증기가 한 번 더 막는다."
             )
+            print(f"\n  차단 {len(blocked)}/{len(OFF_TOPIC)}: {', '.join(blocked) or '없음'}")
+            if passed:
+                print(f"  통과(막지 못함): {', '.join(passed)}")
+        print(f"\n  .env 에  AGENT_SIMILARITY_CUTOFF=<위 값>")
         return 0
     finally:
         db.close()

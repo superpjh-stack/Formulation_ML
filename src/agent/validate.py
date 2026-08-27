@@ -60,29 +60,45 @@ def _to_float(raw: str) -> float:
     return float(raw.replace(",", ""))
 
 
-def _near(text: str, keywords: tuple[str, ...], window: int = 40) -> list[float]:
-    """키워드 근방(window 자) 안의 숫자들을 모은다."""
+def _near(text: str, keywords: tuple[str, ...], unit: str, window: int = 40) -> list[float]:
+    """키워드 근방(window 자)에서 **`unit` 이 붙은 숫자만** 모은다.
+
+    🔴 `unit` 이 없으면 안 된다. 초판은 근방의 모든 숫자를 집었고, 그래서
+    "XRF 합격 기준이 뭐야?" 에 대한 **맞는 답**을 V1 이 막았다:
+
+        "3회 평균이 CRM 인증값 ±0.2% 이내, 표준편차 0.05% 이하"
+        → 합격선을 3 으로 / 0.2 로 서술했다고 판정 (실측 2026-08-27)
+
+    합격선은 **점수**이고 온도 경고선은 **℃** 다. 단위가 다른 숫자는 아예 다른
+    것을 말하고 있다. **맞는 답을 막는 검증기는 없는 것만 못하다** — 사용자가
+    고칠 방법이 없고, 결국 검증을 꺼 버리게 만든다.
+    """
     out: list[float] = []
+    pattern = re.compile(_NUM + r"\s*(?:" + unit + r")")
     for kw in keywords:
         for m in re.finditer(re.escape(kw), text):
             seg = text[m.end() : m.end() + window]
-            out.extend(_to_float(x) for x in re.findall(_NUM, seg))
+            out.extend(_to_float(x) for x in pattern.findall(seg))
     return out
 
 
 # ── V1 수치 대조 ────────────────────────────────────────────────────────
 _PASS_WORDS = ("합격선", "합격 기준", "품질 기준선", "기준 점수", "품질 점수 기준")
+#: 점수 단위. `70점` · `70 점` 만 잡고 `0.2%` 는 잡지 않는다.
+_SCORE_UNIT = r"점(?!검|유|도)"
+
 _TEMP_WORDS = ("온도 경고", "경고 온도", "경고선", "온도 임계")
+_TEMP_UNIT = r"°C|℃|도(?!구)"
 
 
 def v1_numbers(answer: str, rules: RuleSnapshot) -> list[Violation]:
     bad: list[Violation] = []
-    for n in _near(answer, _PASS_WORDS):
+    for n in _near(answer, _PASS_WORDS, _SCORE_UNIT):
         if n != rules.quality_pass_score and n != rules.quality_warn_score:
-            bad.append(Violation("V1", f"합격선을 {n:g} 로 서술 (정본 {rules.quality_pass_score:g})"))
-    for n in _near(answer, _TEMP_WORDS):
+            bad.append(Violation("V1", f"합격선을 {n:g}점 으로 서술 (정본 {rules.quality_pass_score:g}점)"))
+    for n in _near(answer, _TEMP_WORDS, _TEMP_UNIT):
         if n != rules.temp_warn_c:
-            bad.append(Violation("V1", f"온도 경고선을 {n:g} 로 서술 (정본 {rules.temp_warn_c:g})"))
+            bad.append(Violation("V1", f"온도 경고선을 {n:g}°C 로 서술 (정본 {rules.temp_warn_c:g}°C)"))
     return bad
 
 

@@ -65,12 +65,17 @@ def cmd_status(db) -> int:
     return 0
 
 
-def cmd_embed(db) -> int:
-    pending = db.execute(
-        select(DocChunk).where(DocChunk.embedding.is_(None)).order_by(DocChunk.id)
-    ).scalars().all()
+def cmd_embed(db, *, force: bool = False) -> int:
+    stmt = select(DocChunk, DocSource.title).join(
+        DocSource, DocSource.id == DocChunk.source_id
+    ).order_by(DocChunk.id)
+    if not force:
+        stmt = stmt.where(DocChunk.embedding.is_(None))
+    rows = db.execute(stmt).all()
+    pending = [c for c, _ in rows]
+    titles = {c.id: t for c, t in rows}
     if not pending:
-        print("임베딩할 청크가 없다.")
+        print("임베딩할 청크가 없다. 전량 다시 만들려면 --force 를 쓴다.")
         return 0
 
     # 승인 확인이 **첫 줄**이다. 키가 있는지, 네트워크가 되는지는 그 다음 문제다.
@@ -86,7 +91,11 @@ def cmd_embed(db) -> int:
     done = 0
     for i in range(0, len(pending), BATCH):
         batch = pending[i : i + BATCH]
-        vectors = provider.embed_documents([c.content for c in batch])
+        # 🔴 본문만 넣지 않는다 — 제목 경로를 앞에 붙인다 (embed.text_for 참조).
+        #    표 청크가 자연어 질문에 걸리지 않는 문제를 실측으로 확인하고 고쳤다.
+        vectors = provider.embed_documents(
+            [embed.text_for(titles[c.id], c.heading, c.content) for c in batch]
+        )
         if len(vectors) != len(batch):
             raise RuntimeError(f"임베딩 개수 불일치: 요청 {len(batch)} / 응답 {len(vectors)}")
         for chunk, vec in zip(batch, vectors):
@@ -116,6 +125,8 @@ def cmd_embed(db) -> int:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--status", action="store_true", help="색인 상태만 확인한다")
+    ap.add_argument("--force", action="store_true",
+                    help="이미 임베딩된 청크도 전량 다시 만든다 (모델·전처리 변경 시)")
     args = ap.parse_args()
 
     db = SessionLocal()
@@ -123,7 +134,7 @@ def main() -> int:
         if args.status:
             return cmd_status(db)
         try:
-            return cmd_embed(db)
+            return cmd_embed(db, force=args.force)
         except embed.ExternalTransferBlocked as exc:
             print(f"🔴 차단됨\n\n{exc}")
             return 2

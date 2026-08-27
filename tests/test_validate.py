@@ -54,6 +54,30 @@ def test_v1_ignores_numbers_far_from_the_keyword():
     assert validate.v1_numbers(text, RULES) == []
 
 
+def test_v1_does_not_block_xrf_criteria_near_the_word_pass():
+    """🔴 회귀 방지 — 이 오탐이 **맞는 답을 막았다** (실측 2026-08-27).
+
+    "XRF 합격 기준이 뭐야?" 에 대한 정답에 `±0.2%`·`3회`·`0.05%` 가 나오는데,
+    초판 V1 은 키워드 근방의 **모든 숫자**를 집어서 "합격선을 0.2 로 서술" 이라고
+    판정했다. 합격선은 점수이고 XRF 정도관리 기준은 %다 — 단위가 다르면 다른 것을
+    말하고 있다.
+    """
+    answer = (
+        "XRF 합격 기준은 3회 평균이 CRM 인증값 ±0.2% 이내이고, "
+        "3회 반복 표준편차가 0.05% 이하일 것입니다."
+    )
+    assert validate.v1_numbers(answer, RULES) == []
+
+
+def test_v1_still_blocks_a_wrong_score_with_its_unit():
+    """단위를 요구하되 **진짜 위반은 여전히 잡아야 한다.**"""
+    assert validate.v1_numbers("품질 합격 기준은 75점입니다.", RULES)
+
+
+def test_v1_ignores_percentages_near_temperature_words():
+    assert validate.v1_numbers("온도 경고 발생률은 12% 입니다.", RULES) == []
+
+
 # ── V2 인용 필수 ────────────────────────────────────────────────────────
 @pytest.mark.parametrize("answer", [
     "SUP_A 의 평균 편차는 0.12% 입니다.",
