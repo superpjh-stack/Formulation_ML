@@ -151,6 +151,36 @@ class AgentLogOut(BaseModel):
     regenerated: bool
     error_code: str | None
     created_at: str
+    #: 누가 물었나 — 감사 로그의 핵심이다. `admin` 전용 엔드포인트라 노출한다.
+    username: str | None = None
+    #: 질문 원문. **`prompt_sent`·`raw_answer` 는 여전히 내보내지 않는다** —
+    #: 그쪽은 검색된 청크와 조회 결과가 통째로 붙은 외부 송출 전문이다.
+    #: 질문만으로도 "누가 무엇을 물었나" 는 성립하고, 그게 p.60 이 요구한 것이다.
+    question: str | None = None
+    #: 👍 1 / 👎 -1 / 미평가 null. **null 을 0 으로 바꾸지 마라** — 평가 안 한 것과
+    #: 중립 평가는 다르다 (§6.8 은 rating 을 1|-1 두 값으로만 정의했다).
+    rating: int | None = None
+
+
+class FeedbackSummaryOut(BaseModel):
+    """FE-RT-42 "정확도" 의 정본 — `agent_feedback` 기반 만족도 (§6.8).
+
+    🔴 **자동 지표를 지어내지 않는다.** 정답 라벨이 없는 자연어 답변에서 정확도를
+    계산할 방법은 사람의 평가밖에 없다. 그래서 화면에도 "정확도" 가 아니라
+    **"만족도(n건 평가)"** 로 표기한다.
+    """
+
+    positive: int
+    negative: int
+    rated: int
+    #: 평가 대상이 될 수 있는 전체 실행 수 (분모가 아니라 **평가율**을 위한 값)
+    total_runs: int
+    #: 👍 / (👍 + 👎). 🔴 **평가가 0건이면 `null`** — 0.0 이 아니다.
+    #: 0.0 을 내보내면 화면에 "만족도 0%" 가 뜨고, 그건 "아무도 평가 안 함" 이
+    #: 아니라 "전원 불만족" 으로 읽힌다.
+    satisfaction: float | None
+    #: 사람이 읽는 설명. 값이 없으면 왜 없는지 말한다.
+    note: str | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -412,7 +442,26 @@ def list_logs(db: Session = Depends(get_db), pg: PageParams = Depends(),
     admin 이라도 목록 화면에서 전 사용자의 질문 전문이 흘러나올 이유가 없다.
     필요하면 단건 조회를 별도로 만든다.
     """
-    stmt = select(AgentRun)
+    # 질문 원문은 **assistant 메시지의 바로 앞 user 메시지**다.
+    # `agent_runs.message_id` 는 답변(assistant)을 가리키므로 `seq - 1` 을 집는다.
+    asked = (
+        select(AgentMessage.session_id, AgentMessage.seq, AgentMessage.content)
+        .where(AgentMessage.role == "user")
+        .subquery()
+    )
+    answered = select(AgentMessage.id, AgentMessage.session_id, AgentMessage.seq).subquery()
+
+    stmt = (
+        select(AgentRun, User.username, asked.c.content, AgentFeedback.rating)
+        .outerjoin(User, User.id == AgentRun.user_id)
+        .outerjoin(answered, answered.c.id == AgentRun.message_id)
+        .outerjoin(
+            asked,
+            (asked.c.session_id == answered.c.session_id)
+            & (asked.c.seq == answered.c.seq - 1),
+        )
+        .outerjoin(AgentFeedback, AgentFeedback.message_id == AgentRun.message_id)
+    )
     if scope:
         stmt = stmt.where(AgentRun.scope == scope)
     if status:
@@ -422,13 +471,73 @@ def list_logs(db: Session = Depends(get_db), pg: PageParams = Depends(),
     if date_to:
         stmt = stmt.where(AgentRun.created_at <= dt.datetime.combine(date_to, dt.time.max))
     stmt = stmt.order_by(AgentRun.created_at.desc(), AgentRun.id.desc())
-    return paginate(db, stmt, pg, lambda r: {
-        "id": r.id, "scope": r.scope, "route": r.route, "answer_status": r.answer_status,
-        "provider": r.provider, "model_id": r.model_id, "total_ms": r.total_ms,
-        "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
-        "violations": r.violations, "regenerated": r.regenerated,
-        "error_code": r.error_code, "created_at": iso(r.created_at),
-    })
+
+    def row_dto(row) -> dict:
+        r, username, question, rating = row
+        return {
+            "id": r.id, "scope": r.scope, "route": r.route,
+            "answer_status": r.answer_status, "provider": r.provider,
+            "model_id": r.model_id, "total_ms": r.total_ms,
+            "input_tokens": r.input_tokens, "output_tokens": r.output_tokens,
+            "violations": r.violations, "regenerated": r.regenerated,
+            "error_code": r.error_code, "created_at": iso(r.created_at),
+            "username": username, "question": question, "rating": rating,
+        }
+
+    return paginate(db, stmt, pg, row_dto, scalars=False)
+
+
+@router.get("/feedback/summary", response_model=FeedbackSummaryOut,
+            summary="FE-RT-42 만족도 (정확도의 정본)",
+            dependencies=[Depends(get_current_user)])
+def feedback_summary(
+    db: Session = Depends(get_db),
+    scope: str | None = Query(None),
+    days: int = Query(30, ge=1, le=365),
+):
+    """👍/(👍+👎). **평가가 0건이면 `satisfaction` 은 `null` 이다.**
+
+    0.0 을 돌려주면 화면에 "만족도 0%" 가 뜨고, 그건 "아무도 평가하지 않음" 이
+    아니라 "전원 불만족" 으로 읽힌다. 이 프로젝트가 걷어낸 조용한 실패와 같은
+    종류다 — 없는 값을 그럴듯한 숫자로 채우는 것.
+    """
+    since = dt.datetime.now() - dt.timedelta(days=days)
+
+    runs = select(AgentRun.message_id).where(
+        AgentRun.created_at >= since, AgentRun.message_id.isnot(None)
+    )
+    if scope:
+        runs = runs.where(AgentRun.scope == scope)
+    ids = [r for (r,) in db.execute(runs).all()]
+    total_runs = len(ids)
+
+    positive = negative = 0
+    if ids:
+        rows = db.execute(
+            select(AgentFeedback.rating, func.count(AgentFeedback.id))
+            .where(AgentFeedback.message_id.in_(ids))
+            .group_by(AgentFeedback.rating)
+        ).all()
+        counts = {int(k): int(v) for k, v in rows}
+        positive, negative = counts.get(1, 0), counts.get(-1, 0)
+
+    rated = positive + negative
+    if rated == 0:
+        note = (
+            f"최근 {days}일 실행 {total_runs}건 중 평가가 0건입니다. "
+            "만족도는 사용자가 👍/👎 를 눌러야 계산됩니다."
+            if total_runs else f"최근 {days}일 실행 기록이 없습니다."
+        )
+        return FeedbackSummaryOut(
+            positive=0, negative=0, rated=0, total_runs=total_runs,
+            satisfaction=None, note=note,
+        )
+
+    return FeedbackSummaryOut(
+        positive=positive, negative=negative, rated=rated, total_runs=total_runs,
+        satisfaction=round(positive / rated * 100, 1),
+        note=f"최근 {days}일 실행 {total_runs}건 중 {rated}건 평가 기준",
+    )
 
 
 @router.post("/reindex", summary="재색인 트리거 (admin)",

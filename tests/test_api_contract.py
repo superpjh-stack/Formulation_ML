@@ -297,18 +297,25 @@ class TestErrorContract:
         res = client.get("/api/v1/agents/recommendations", headers=viewer_headers)
         assert res.status_code == 501
 
-    def test_gate_agents_are_501_only_while_the_provider_is_unset(self, client, viewer_headers):
+    def test_unset_provider_is_501_not_503(self, client, viewer_headers, monkeypatch):
         """§7.6 — 제공자 미설정은 **501**(미구현)이지 503(일시 장애)이 아니다.
 
         503 은 "잠시 뒤 다시 해보라" 는 뜻이라 담당자가 무한 재시도를 한다.
         키가 없는 것은 재시도로 해결되지 않는다.
+
+        🔴 **키를 지우고 돌린다.** 초판은 `assert status in (200, 501)` 이었는데,
+        `.env` 에 실제 키가 들어온 뒤로 이 테스트가 **매 실행마다 유료 LLM 을
+        호출**했다 (실측 2026-08-28 — 레이트리밋 재시도에 걸려 스위트가 멈췄다).
+        테스트는 네트워크와 과금에 의존하면 안 된다.
         """
+        for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(env, raising=False)
+
         for path in ("/agents/receiving", "/agents/shipping"):
             res = client.post(f"/api/v1{path}", json={"question": "테스트"},
                               headers=viewer_headers)
-            assert res.status_code in (200, 501), path
-            if res.status_code == 501:
-                assert res.json()["detail"] == "미구현 — v1 범위 밖"
+            assert res.status_code == 501, path
+            assert res.json()["detail"] == "미구현 — v1 범위 밖"
 
     def test_agent_logs_are_admin_only(self, client, viewer_headers):
         """§7.1 — `agent_runs.prompt_sent` 에 외부 송출 전문이 들어간다.
@@ -566,3 +573,60 @@ class TestModelSingleton:
 def test_target_keys_are_readonly():
     from src.api.settings_store import READONLY_KEYS
     assert READONLY_KEYS == {"ml.sn_target", "ml.ag_target", "ml.cu_target"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FE-RT-42 — 만족도 · 실행 로그 (agent-architecture.md §6.6·§6.8·§7.1)
+# ══════════════════════════════════════════════════════════════════════════
+class TestAgentLogsAndSatisfaction:
+    """§6.8 — **정확도의 유일한 실측 원천은 사람의 평가다.**
+
+    자동 지표를 지어내지 않는다. 그리고 평가가 0건이면 **0% 가 아니라 null** 이다.
+    0% 를 내보내면 화면에 "만족도 0%" 가 뜨고, 그건 "아무도 평가하지 않음" 이
+    아니라 "전원 불만족" 으로 읽힌다.
+    """
+
+    def test_summary_returns_null_not_zero_when_nothing_is_rated(self, client, admin_headers):
+        res = client.get("/api/v1/agents/feedback/summary?days=1", headers=admin_headers)
+        assert res.status_code == 200
+        body = res.json()
+        if body["rated"] == 0:
+            assert body["satisfaction"] is None, "평가 0건인데 숫자를 만들어 냈다"
+            assert body["note"], "값이 없으면 왜 없는지 말해야 한다"
+
+    def test_summary_shape_is_stable(self, client, admin_headers):
+        body = client.get("/api/v1/agents/feedback/summary", headers=admin_headers).json()
+        assert set(body) == {
+            "positive", "negative", "rated", "total_runs", "satisfaction", "note",
+        }
+
+    def test_satisfaction_is_positive_over_rated(self, client, admin_headers):
+        """분모는 **평가 건수**이지 실행 건수가 아니다 — 미평가를 불만족으로 세지 않는다."""
+        b = client.get("/api/v1/agents/feedback/summary", headers=admin_headers).json()
+        if b["rated"]:
+            assert b["satisfaction"] == pytest.approx(b["positive"] / b["rated"] * 100, abs=0.05)
+            assert b["rated"] == b["positive"] + b["negative"]
+
+    def test_logs_expose_the_audit_fields_the_screen_needs(self, client, admin_headers):
+        """🔴 회귀 방지 — 화면이 `agent`·`latency_ms`·`status` 를 찾는데 서버가
+        `scope`·`total_ms`·`answer_status` 를 주고 있었다. **19건이 있는데 표가
+        비어 있었다** (실측 2026-08-28).
+        """
+        body = client.get("/api/v1/agents/logs?page_size=1", headers=admin_headers).json()
+        if not body["items"]:
+            pytest.skip("agent_runs 가 비어 있다")
+        row = body["items"][0]
+        assert {"scope", "total_ms", "answer_status", "username", "question", "rating"} <= set(row)
+
+    def test_logs_never_leak_the_outbound_prompt(self, client, admin_headers):
+        """§6.6 — `prompt_sent` 는 외부로 나간 전문이다. 목록에 싣지 않는다."""
+        body = client.get("/api/v1/agents/logs?page_size=5", headers=admin_headers).json()
+        for row in body["items"]:
+            assert "prompt_sent" not in row
+            assert "raw_answer" not in row
+
+    def test_feedback_rejects_values_outside_the_two_defined_ratings(self, client, admin_headers):
+        """§6.8 은 rating 을 `1`|`-1` 로만 정의했다. 0(중립)을 발명하지 않는다."""
+        res = client.post("/api/v1/agents/messages/1/feedback",
+                          headers=admin_headers, json={"rating": 0})
+        assert res.status_code == 422

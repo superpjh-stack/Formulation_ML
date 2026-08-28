@@ -66,15 +66,24 @@ class PageParams:
         return col.desc() if direction.strip().lower() == "desc" else col.asc()
 
 
-def paginate(db: Session, stmt: Select, pg: PageParams, mapper) -> dict:
+def paginate(db: Session, stmt: Select, pg: PageParams, mapper, *, scalars: bool = True) -> dict:
     """`stmt` 를 count + limit/offset 으로 실행해 봉투 dict 를 만든다.
 
-    `mapper` 는 ORM 행 하나를 응답 dict 로 바꾸는 함수다.
+    `mapper` 는 행 하나를 응답 dict 로 바꾸는 함수다.
+
+    `scalars=True`(기본)면 `.scalars()` 로 **첫 컬럼만** 꺼내 ORM 객체를 넘긴다.
+    `SELECT` 에 컬럼을 여러 개 둔 경우(조인해서 사용자명·평가를 함께 집을 때 등)
+    `scalars=False` 로 두면 `Row` 튜플이 그대로 `mapper` 에 간다.
+
+    ⚠ 기본값을 True 로 둔 것은 기존 호출부 20여 곳이 전부 단일 엔티티라서다.
+      다중 컬럼 `stmt` 에 이 옵션을 빠뜨리면 `.scalars()` 가 첫 컬럼만 남겨
+      `TypeError: cannot unpack non-iterable` 로 터진다 — 조용히 틀리지는 않는다.
     """
     total = db.execute(
         select(func.count()).select_from(stmt.order_by(None).subquery())
     ).scalar_one()
-    rows = db.execute(stmt.limit(pg.page_size).offset(pg.offset)).scalars().all()
+    result = db.execute(stmt.limit(pg.page_size).offset(pg.offset))
+    rows = result.scalars().all() if scalars else result.all()
     return {
         "items": [mapper(r) for r in rows],
         "total": int(total),

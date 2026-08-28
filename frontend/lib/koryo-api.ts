@@ -1058,9 +1058,34 @@ export const requestAgentDecision = (lotId: string) =>
 export const getAgentRecommendations = (q: PageQuery = {}) =>
   apiGet<Page<Record<string, unknown>>>(`/agents/recommendations${qs({ ...q })}`);
 
-/** LLM 을 호출하지 않는 조회다 — 기본 타임아웃을 그대로 쓴다 (§7.10.5) */
-export const getAgentLogs = (q: PageQuery & DateRangeQuery & { agent?: string } = {}) =>
-  apiGet<Page<Record<string, unknown>>>(`/agents/logs${qs({ ...q })}`);
+/**
+ * FE-RT-42 실행 로그 — **`admin` 전용** (`agent-architecture.md` §7.1).
+ *
+ * `agent_runs.prompt_sent`(외부 송출 전문)·`raw_answer` 는 서버가 내려주지 않는다.
+ * 질문 원문(`question`)까지가 감사 범위다.
+ *
+ * ⚠ 필터 키는 `scope` 다. 예전 초안의 `agent` 가 아니다 — 서버가 화면 단위
+ *   (`receiving`|`shipping`|…)로 기록한다.
+ */
+export const getAgentLogs = (
+  q: PageQuery & DateRangeQuery & { scope?: string; status?: string } = {}
+) => apiGet<Page<Record<string, unknown>>>(`/agents/logs${qs({ ...q })}`);
+
+/** FE-RT-42 "정확도" 의 정본 — `agent_feedback` 기반 만족도 (§6.8) */
+export interface AgentFeedbackSummary {
+  positive: number;
+  negative: number;
+  rated: number;
+  total_runs: number;
+  /** 🔴 **평가가 0건이면 `null` 이다.** 0 으로 바꿔 표시하지 마라 —
+   *  "아무도 평가 안 함" 이 "전원 불만족" 으로 읽힌다. */
+  satisfaction: number | null;
+  /** 값이 없는 이유를 사람이 읽는 문장으로 준다. 화면에 그대로 보여준다. */
+  note: string | null;
+}
+
+export const getAgentFeedbackSummary = (scope?: string, days?: number) =>
+  apiGet<AgentFeedbackSummary>(`/agents/feedback/summary${qs({ scope, days })}`);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // 13. G10 — KPI 관리 (FE-RT-43~45)
