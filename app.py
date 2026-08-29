@@ -87,6 +87,23 @@ async def lifespan(app: FastAPI):
     purged = purge_expired_audit_logs()
     if purged:
         print(f"  [OK] 만료 감사로그 {purged}건 정리")
+
+    # agent-architecture.md §6.6 — 외부 송출 원문 90일, 실행 로그 행 1년.
+    # 🔴 서버가 몇 주씩 떠 있으면 기동 시 1회로는 90일 정책이 지켜지지 않는다.
+    #    상시 운영에서는 `scripts/purge_retention.py` 를 cron 으로 돌려라.
+    from src.agent import retention
+    from src.db.session import SessionLocal
+
+    _db = SessionLocal()
+    try:
+        stats = retention.run_all(_db)
+        if stats["masked"] or stats["purged"]:
+            print(
+                f"  [OK] Agent 로그 정리 — 원문 {stats['masked']}건 비움, "
+                f"행 {stats['purged']}건 삭제"
+            )
+    finally:
+        _db.close()
     yield
 
 
