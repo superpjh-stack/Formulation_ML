@@ -289,7 +289,8 @@ class TestErrorContract:
         입고(FE-RT-10)·출하(FE-RT-20) 는 필수로 승격돼 실동작한다. 나머지는
         여전히 "준비 중" 이며 **가짜 응답으로 채우지 않는다.**
         """
-        posts = ["/agents/mixing", "/agents/query", "/agents/analysis", "/agents/decision"]
+        # `/query` 는 2026-08-30 에 열었다 (문서 근거 전용, 스코프 global)
+        posts = ["/agents/mixing", "/agents/analysis", "/agents/decision"]
         for path in posts:
             res = client.post(f"/api/v1{path}", json={}, headers=viewer_headers)
             assert res.status_code == 501, path
@@ -757,3 +758,30 @@ class TestAgentSessions:
             assert q["question"] is not None
             # 답변에는 보통 인용 라벨이 붙는다 — 질문에는 없어야 한다
             assert "근거:" not in q["question"]
+
+    def test_global_scope_has_no_db_tools(self):
+        """🔴 FE-RT-38 은 **문서 근거 전용**이다.
+
+        두 스코프의 도구를 합쳐 주면 `ROLE_SCOPES` 의 역할별 통제를 정확히
+        우회한다 — `sales` 가 이 화면으로 입고 데이터에 닿고, 그건 설계서 §7.7
+        이 "Agent 도입 최대 보안 위험" 으로 지목한 경로다.
+        """
+        import src.agent.tools as tools
+
+        for role in ("admin", "manufacture", "quality", "sales", "viewer"):
+            assert tools.tools_for("global", role) == (), role
+
+    def test_every_role_can_use_the_query_screen(self):
+        """도구가 없어 데이터 접근이 일어나지 않으므로 전 역할이 쓴다."""
+        import src.agent.tools as tools
+
+        for role, scopes in tools.ROLE_SCOPES.items():
+            assert "global" in scopes, role
+
+    def test_scoped_tools_are_still_restricted(self):
+        """global 을 열었다고 기존 통제가 느슨해지면 안 된다 (회귀 방지)."""
+        import src.agent.tools as tools
+
+        assert tools.tools_for("receiving", "sales") == ()
+        assert tools.tools_for("shipping", "manufacture") == ()
+        assert tools.tools_for("receiving", "manufacture")

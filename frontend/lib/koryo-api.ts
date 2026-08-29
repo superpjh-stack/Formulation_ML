@@ -1094,8 +1094,18 @@ export const askShippingAgent = (question: string, sessionId?: number) =>
     AGENT_TIMEOUT_MS
   );
 
-export const askAgentQuery = (question: string, context?: string) =>
-  apiPost<AgentAnswer>('/agents/query', { question, context }, AGENT_TIMEOUT_MS);
+/**
+ * FE-RT-38 자연어 질의 — **문서 근거 전용** (스코프 `global`).
+ *
+ * `context` 를 더 이상 보내지 않는다. 서버 `AgentAskIn` 에 그런 필드가 없고,
+ * 스코프가 도구 범위를 정하므로 클라이언트가 문맥을 지정할 자리가 아니다.
+ */
+export const askAgentQuery = (question: string, sessionId?: number) =>
+  apiPost<AgentAnswer>(
+    '/agents/query',
+    { question, session_id: sessionId ?? null },
+    AGENT_TIMEOUT_MS
+  );
 
 export const requestAgentAnalysis = (body: {
   topic: string;

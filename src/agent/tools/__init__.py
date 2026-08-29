@@ -43,7 +43,8 @@ from src.agent.tools._base import (
     thresholds,
 )
 
-SCOPES: tuple[str, ...] = ("receiving", "shipping")
+#: 화면 스코프. `global` 은 도구가 없는 **문서 전용** 스코프다 (FE-RT-38).
+SCOPES: tuple[str, ...] = ("receiving", "shipping", "global")
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +198,14 @@ CATALOG: dict[str, ToolSpec] = {
 SCOPE_TOOLS: dict[str, tuple[str, ...]] = {
     "receiving": tuple(s.name for s in _RECEIVING),
     "shipping": tuple(s.name for s in _SHIPPING),
+    # FE-RT-38 자연어 질의 — **문서 근거 전용. DB 도구를 주지 않는다.**
+    #
+    # 여기에 두 스코프의 도구를 합쳐 넣고 싶어지지만 그러면 안 된다. 아래
+    # ROLE_SCOPES 가 `sales` 를 입고에서, `manufacture` 를 출하에서 뺀 이유가
+    # §7.7 이 "Agent 도입 최대 보안 위험" 으로 지목한 경로를 막기 위해서인데,
+    # 전 역할이 쓰는 화면에 도구를 합쳐 주면 **그 통제를 정확히 우회**한다.
+    # 사내 기준 문서를 묻는 화면이므로 RAG 만으로 제 역할을 한다.
+    "global": (),
 }
 
 
@@ -212,12 +221,13 @@ SCOPE_TOOLS: dict[str, tuple[str, ...]] = {
 #:   `sales` 를 입고에서, `manufacture` 를 출하에서 제외했다.
 #:   `viewer` 는 쓰기가 없고 전 화면 조회가 계약이므로 양쪽 모두 허용한다.
 #:   운영 중 조정이 필요하면 **여기서만** 바꾼다 — 도구 코드는 손대지 않는다.
+#: `global` 은 전 역할이 쓴다 — 도구가 없어 데이터 접근이 일어나지 않는다.
 ROLE_SCOPES: dict[str, frozenset[str]] = {
-    "admin":       frozenset({"receiving", "shipping"}),
-    "manufacture": frozenset({"receiving"}),
-    "quality":     frozenset({"receiving", "shipping"}),
-    "sales":       frozenset({"shipping"}),
-    "viewer":      frozenset({"receiving", "shipping"}),
+    "admin":       frozenset({"receiving", "shipping", "global"}),
+    "manufacture": frozenset({"receiving", "global"}),
+    "quality":     frozenset({"receiving", "shipping", "global"}),
+    "sales":       frozenset({"shipping", "global"}),
+    "viewer":      frozenset({"receiving", "shipping", "global"}),
 }
 
 

@@ -13,7 +13,8 @@ v1.1 게이트는 **`/agents/receiving`(FE-RT-10) · `/agents/shipping`(FE-RT-20
 | `POST /agents/messages/{id}/feedback` | 실동작 | 정확도의 실측 원천 |
 | `GET  /agents/logs` | 실동작 (**admin 전용**) | FE-RT-42 |
 | `POST /agents/reindex` | 실동작 (**admin 전용**) | §3.7 |
-| `/mixing` `/query` `/analysis` `/decision` `/recommendations` | **501 유지** | 선택 |
+| `POST /agents/query` | 실동작 (**문서 전용**) | FE-RT-38 |
+| `/mixing` `/analysis` `/decision` `/recommendations` | **501 유지** | 선택 |
 
 **`/agents/logs` 를 admin 전용으로 좁혔다** (§7.1). `agent_runs.prompt_sent` 에
 외부 송출 전문이 들어가므로 다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
@@ -312,6 +313,22 @@ def shipping_agent(body: AgentAskIn, request: Request, db: Session = Depends(get
     return _ask("shipping", body, request, db, user)
 
 
+@router.post("/query", response_model=AgentAnswerOut, summary="FE-RT-38 자연어 질의")
+def query_agent(body: AgentAskIn, request: Request, db: Session = Depends(get_db),
+                user: User = Depends(get_current_user)):
+    """사내 기준 문서에 대한 자연어 질의 — **문서 근거 전용**.
+
+    스코프 `global` 에는 DB 도구가 없다(`tools.SCOPE_TOOLS`). 두 스코프의 도구를
+    합쳐 주고 싶어지지만 그러면 §7.7 의 역할별 통제를 정확히 우회한다 —
+    `sales` 가 이 화면으로 입고 데이터에 닿는다. 실적 조회는 각 화면의 Agent 가
+    한다.
+
+    도구가 없으므로 오케스트레이터가 **도구 선택 호출을 건너뛴다.** 질문 1건에
+    LLM 호출이 1회로 줄어 TPM 부담도 작다.
+    """
+    return _ask("global", body, request, db, user)
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 상태 — 화면이 "준비됨/미구성" 을 판단하는 유일한 근거 (§2.9)
 # ══════════════════════════════════════════════════════════════════════════
@@ -608,7 +625,6 @@ def _not_implemented():
 
 _STILL_501: tuple[tuple[str, str, str, str], ...] = (
     ("/mixing", "POST", "FE-RT-15", "배합 AI Agent"),
-    ("/query", "POST", "FE-RT-38", "자연어 질의"),
     ("/analysis", "POST", "FE-RT-39", "자동 분석 리포트"),
     ("/decision", "POST", "FE-RT-40", "의사결정 지원"),
     ("/recommendations", "GET", "FE-RT-41", "추천 이력"),

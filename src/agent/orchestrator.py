@@ -44,6 +44,9 @@ NO_INDEX_MESSAGE = "AI 지식 문서가 아직 등록되지 않았습니다."
 SCOPE_GUIDE = {
     "receiving": "원재료 입고 이력, 공급사별 성분 편차·안정성, 입고 검사 상태",
     "shipping": "출하 실적, 고객사별 출하량, 클레임 현황과 처리 상태",
+    # 도구가 없다 — 등록된 문서(작업표준서·품질기준서)로만 답한다
+    "global": "사내 작업표준서·품질기준서에 적힌 기준·절차. **수치 조회는 못 한다** — "
+              "입고/출하 실적은 각 화면의 AI Agent 에서 물어야 한다",
 }
 
 
@@ -231,28 +234,36 @@ def answer(
     specs = tool_registry.tools_for(scope, role)
 
     # ── 1) 도구 선택 — LLM 은 "어느 쿼리 + 어떤 파라미터" 만 고른다 ──────────
+    # 🔴 도구가 없는 스코프(`global`)는 **계획 호출을 건너뛴다.**
+    #    고를 도구가 없는데 LLM 에게 "골라라" 고 물으면 700토큰쯤을 버리고
+    #    빈 손으로 돌아온다. TPM 이 빠듯한 환경에서 그냥 낭비다.
     plan_system = (
         f"{SYSTEM_BASE}\n\n오늘 날짜는 {dt.date.today().isoformat()} 다.\n"
         f"이 화면({scope})이 답할 수 있는 것: {SCOPE_GUIDE.get(scope, '')}\n\n"
         "질문에 답하는 데 필요한 도구를 골라 호출하라. 도구가 필요 없는 "
         "문서·기준 질문이면 아무 도구도 부르지 말고 그렇다고만 답하라."
     )
-    plan, ms = providers.timed(
-        llm.complete,
-        system=plan_system,
-        messages=[{"role": "user", "content": question}],
-        tools=[_tool_schema(s) for s in specs],
-    )
-    lat["classify"] = ms
-    out.input_tokens, out.output_tokens = plan.input_tokens, plan.output_tokens
-    out.cached_input_tokens = plan.cached_input_tokens
+    if specs:
+        plan, ms = providers.timed(
+            llm.complete,
+            system=plan_system,
+            messages=[{"role": "user", "content": question}],
+            tools=[_tool_schema(s) for s in specs],
+        )
+        lat["classify"] = ms
+        out.input_tokens, out.output_tokens = plan.input_tokens, plan.output_tokens
+        out.cached_input_tokens = plan.cached_input_tokens
+        planned_calls = plan.tool_calls
+    else:
+        lat["classify"] = 0
+        planned_calls = []
 
     # ── 2) 도구 실행 — 우리 코드가 한다 ────────────────────────────────────
     tool_results: list[ToolResult] = []
     calls_log: list[dict] = []
     partial = False
     t_sql = time.perf_counter()
-    for call in plan.tool_calls:
+    for call in planned_calls:
         started = time.perf_counter()
         try:
             tr = tool_registry.run(db, call["name"], scope=scope, role=role, **(call.get("args") or {}))
