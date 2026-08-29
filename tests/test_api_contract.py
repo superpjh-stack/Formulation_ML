@@ -630,3 +630,93 @@ class TestAgentLogsAndSatisfaction:
         res = client.post("/api/v1/agents/messages/1/feedback",
                           headers=admin_headers, json={"rating": 0})
         assert res.status_code == 422
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 대화 세션 (§6.3·§7.3 · 사업계획서 p.42 "사용자 질문이력")
+# ══════════════════════════════════════════════════════════════════════════
+class TestAgentSessions:
+    def test_sessions_are_scoped_to_the_owner(self, client, viewer_headers, admin_headers):
+        """§7.3 — 본인 것만. 남의 세션은 **403**(없는 척하는 404 가 아니다)."""
+        mine = client.get("/api/v1/agents/sessions", headers=admin_headers).json()
+        if not mine["items"]:
+            pytest.skip("admin 세션이 없다")
+        sid = mine["items"][0]["id"]
+        assert client.get(f"/api/v1/agents/sessions/{sid}", headers=viewer_headers).status_code == 403
+
+    def test_scope_filter_excludes_other_screens(self, client, admin_headers):
+        """🔴 화면과 다른 스코프 세션을 목록에 띄우면 **클릭하는 순간 403** 이다.
+
+        서버 `_session_for()` 가 스코프 불일치를 막으므로(§3.3.1 도구 범위),
+        목록 단계에서 걸러야 한다. 프론트가 `scope` 를 넘기는 이유다.
+        """
+        body = client.get("/api/v1/agents/sessions?scope=shipping", headers=admin_headers).json()
+        assert all(s["scope"] == "shipping" for s in body["items"])
+
+    def test_resuming_a_session_from_the_wrong_screen_is_403(self, client, admin_headers):
+        sessions = client.get("/api/v1/agents/sessions?scope=shipping",
+                              headers=admin_headers).json()["items"]
+        if not sessions:
+            pytest.skip("출하 세션이 없다")
+        res = client.post("/api/v1/agents/receiving", headers=admin_headers,
+                          json={"question": "테스트", "session_id": sessions[0]["id"]})
+        assert res.status_code == 403
+
+    def test_missing_session_is_404(self, client, admin_headers):
+        assert client.get("/api/v1/agents/sessions/99999999",
+                          headers=admin_headers).status_code == 404
+
+    def test_detail_carries_messages_and_their_citations(self, client, admin_headers):
+        """대화 재개는 `agent_messages` 조회다 (§2 — 그래프 상태 복원이 아니다)."""
+        sessions = client.get("/api/v1/agents/sessions", headers=admin_headers).json()["items"]
+        if not sessions:
+            pytest.skip("세션이 없다")
+        body = client.get(f"/api/v1/agents/sessions/{sessions[0]['id']}",
+                          headers=admin_headers).json()
+        assert {"session", "messages"} <= set(body)
+        for m in body["messages"]:
+            assert {"seq", "role", "content", "answer_status", "sources"} <= set(m)
+            # 🔴 assistant 의 content 는 null 일 수 있다 (§6.4). 그게 정상이다.
+            if m["role"] == "user":
+                assert m["content"]
+
+    def test_deleting_a_session_keeps_the_audit_log(self, client, admin_headers):
+        """🔴 대화를 지워도 `agent_runs` 는 남아야 한다.
+
+        `session_id`·`message_id` 가 **SET NULL** 인 이유다(§6.6). CASCADE 였다면
+        사용자가 대화를 지우는 것만으로 외부 송출 기록이 사라진다 — 사업계획서
+        p.60 "사용 로그 기록·관리" 가 무력화된다.
+        """
+        from sqlalchemy import text
+
+        from src.db.models import AgentRun, AgentSession
+        from src.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            # SET NULL 인지 CASCADE 인지는 **스키마가 답**이다. 데이터에 의존하면
+            # 시드 상태에 따라 통과했다 실패했다 한다.
+            for column, table in (("session_id", "agent_sessions"), ("message_id", "agent_messages")):
+                rule = db.execute(text("""
+                    select rc.delete_rule
+                      from information_schema.referential_constraints rc
+                      join information_schema.key_column_usage k
+                        on k.constraint_name = rc.constraint_name
+                     where k.table_name = 'agent_runs' and k.column_name = :col
+                """), {"col": column}).scalar_one()
+                assert rule == "SET NULL", (
+                    f"agent_runs.{column} 이 {rule} 이다. CASCADE 면 사용자가 대화를 "
+                    f"지우는 것만으로 외부 송출 기록이 사라진다 ({table})."
+                )
+
+            # 반대로 메시지는 세션과 함께 지워져야 한다 (§6.4)
+            msg_rule = db.execute(text("""
+                select rc.delete_rule
+                  from information_schema.referential_constraints rc
+                  join information_schema.key_column_usage k
+                    on k.constraint_name = rc.constraint_name
+                 where k.table_name = 'agent_messages' and k.column_name = 'session_id'
+            """)).scalar_one()
+            assert msg_rule == "CASCADE"
+        finally:
+            db.close()

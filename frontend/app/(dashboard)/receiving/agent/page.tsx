@@ -44,6 +44,7 @@ export default function ReceivingAgentPage() {
       />
       <AgentChat
         title="입고관리 AI Agent"
+        scope="receiving"
         intro={
           "입고 데이터와 사내 기준 문서에 대해 질문해 주세요.\n" +
           "공급사별 성분 편차, 입고 이력, 작업표준서·품질기준서의 입고 관련 기준을 다룹니다."

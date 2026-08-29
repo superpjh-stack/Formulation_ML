@@ -1023,6 +1023,47 @@ export const submitAgentFeedback = (
   body: { rating: 1 | -1; reason?: string; comment?: string }
 ) => apiPost<{ id: number }>(`/agents/messages/${messageId}/feedback`, body);
 
+// ── 대화 세션 (§7.3 · 사업계획서 p.42 "사용자 질문이력") ──────────────────────
+
+export interface AgentSession {
+  id: number;
+  /** `receiving` | `shipping` | … — 화면 스코프. **다른 스코프 세션을 열면 403 이다** */
+  scope: string;
+  /** 첫 질문에서 파생. 아직 질문하지 않았으면 null */
+  title: string | null;
+  started_at: string;
+  last_active_at: string;
+  /** user + assistant 합계. 한 번 주고받으면 2 다 */
+  message_count: number;
+}
+
+export interface AgentSessionMessage {
+  id: number;
+  seq: number;
+  role: "user" | "assistant";
+  /** 🔴 assistant 인데 null 일 수 있다 — 근거 없음·룰 위반이면 답변을 버렸다 (§6.4) */
+  content: string | null;
+  answer_status: string | null;
+  created_at: string;
+  sources: AgentCitation[];
+}
+
+export interface AgentSessionDetail {
+  session: AgentSession;
+  messages: AgentSessionMessage[];
+}
+
+/** 본인 세션만 돌아온다. `scope` 를 넘기지 않으면 전 화면 세션이 섞인다 */
+export const getAgentSessions = (scope?: string, q: PageQuery = {}) =>
+  apiGet<Page<AgentSession>>(`/agents/sessions${qs({ scope, ...q })}`);
+
+export const getAgentSession = (id: number) =>
+  apiGet<AgentSessionDetail>(`/agents/sessions/${id}`);
+
+/** 204. 메시지·인용은 CASCADE 로 함께 지워진다 (§6.3) */
+export const deleteAgentSession = (id: number) =>
+  apiDelete<void>(`/agents/sessions/${id}`);
+
 export const askMixingAgent = (question: string) =>
   apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>(
     '/agents/mixing',

@@ -34,27 +34,74 @@ import { StatusBadge } from "@/components/ui/StatusBadge";
 import { T } from "@/components/ui/tokens";
 import { resolveError } from "@/lib/error-contract";
 import { isSubmitKey } from "@/lib/ime";
+import { SessionList } from "@/components/agent/SessionList";
 import {
   getAgentHealth,
+  getAgentSession,
   submitAgentFeedback,
   type AgentAnswer,
   type AgentCitation,
   type AgentHealth,
+  type AgentSessionMessage,
 } from "@/lib/koryo-api";
 
 export interface AgentChatProps {
   /** 헤더에 보일 이름 */
   title: string;
+  /** `receiving` | `shipping` — 세션 목록을 이 스코프로 좁힌다 (§3.3.1) */
+  scope: string;
   /** 이 화면이 무엇을 답하는지 — 안내 버블에 그대로 쓴다 */
   intro: string;
   exampleQuestions: readonly string[];
   ask: (question: string, sessionId?: number) => Promise<AgentAnswer>;
 }
 
+/**
+ * 화면이 그리는 답변. `AgentAnswer` 와 **복원된 과거 메시지**를 함께 담는다.
+ *
+ * 🔴 `latency_ms` 가 `null` 일 수 있다 — 복원된 대화에는 그때의 응답 시간이
+ *    남아 있지 않다(`agent_messages` 는 지연을 저장하지 않는다. `agent_runs` 가
+ *    갖고 있고 그건 admin 전용이다). **0 으로 채우지 않는다.**
+ */
+interface AnswerView {
+  message_id: number | null;
+  answer: string | null;
+  answer_status: string;
+  sources: AgentCitation[];
+  violations: string[];
+  partial: boolean;
+  latency_ms: number | null;
+}
+
+function fromAnswer(res: AgentAnswer): AnswerView {
+  return {
+    message_id: res.message_id,
+    answer: res.answer,
+    answer_status: res.answer_status,
+    sources: res.sources,
+    violations: res.violations,
+    partial: res.partial,
+    latency_ms: res.latency_ms,
+  };
+}
+
+function fromStored(m: AgentSessionMessage): AnswerView {
+  return {
+    message_id: m.id,
+    answer: m.content,
+    // 과거 메시지에 상태가 없으면 상태를 지어내지 않는다
+    answer_status: m.answer_status ?? "ok",
+    sources: m.sources,
+    violations: [],
+    partial: false,
+    latency_ms: null,
+  };
+}
+
 type Bubble =
   | { kind: "guide"; id: string; text: string }
   | { kind: "user"; id: string; text: string; time: string }
-  | { kind: "answer"; id: string; time: string; res: AgentAnswer }
+  | { kind: "answer"; id: string; time: string; res: AnswerView }
   | { kind: "system"; id: string; time: string; title: string; detail: string };
 
 const STATUS_TEXT: Record<string, { label: string; tone: "warn" | "error" | "muted" }> = {
@@ -87,15 +134,18 @@ function qualifies(c: AgentCitation): boolean {
   return true;
 }
 
-export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProps) {
+export function AgentChat({ title, scope, intro, exampleQuestions, ask }: AgentChatProps) {
   const [health, setHealth] = useState<AgentHealth | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [bubbles, setBubbles] = useState<Bubble[]>([]);
   const [input, setInput] = useState("");
   const [pending, setPending] = useState(false);
   const [sessionId, setSessionId] = useState<number | undefined>(undefined);
+  const [restoring, setRestoring] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
+  /** 세션 목록 갱신 함수 — 자식이 등록하고 전송 후 부모가 부른다 */
+  const reloadSessions = useRef<(() => void) | null>(null);
 
   const nextId = (p: string) => `${p}-${(seq.current += 1)}`;
 
@@ -115,7 +165,7 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
 
   // 🔴 준비 여부는 서버가 정한다. 화면이 추측하지 않는다.
   const ready = Boolean(health?.configured);
-  const canSend = ready && input.trim().length > 0 && !pending;
+  const canSend = ready && input.trim().length > 0 && !pending && !restoring;
 
   const send = useCallback(
     async (raw: string) => {
@@ -133,8 +183,10 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
         setSessionId(res.session_id);
         setBubbles((prev) => [
           ...prev,
-          { kind: "answer", id: nextId("a"), time: clock(), res },
+          { kind: "answer", id: nextId("a"), time: clock(), res: fromAnswer(res) },
         ]);
+        // 새 대화면 목록에 나타나야 하고, 이어가는 대화면 순서가 올라와야 한다
+        reloadSessions.current?.();
       } catch (err) {
         const entry = resolveError(err);
         setBubbles((prev) => [
@@ -154,13 +206,67 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
     [ask, pending, ready, sessionId]
   );
 
+  const openSession = useCallback(async (id: number) => {
+    if (pending) return;
+    setRestoring(true);
+    try {
+      const detail = await getAgentSession(id);
+      setSessionId(detail.session.id);
+      setBubbles(
+        detail.messages.map((m) =>
+          m.role === "user"
+            ? {
+                kind: "user" as const,
+                id: `m-${m.id}`,
+                text: m.content ?? "",
+                time: hhmm(m.created_at),
+              }
+            : {
+                kind: "answer" as const,
+                id: `m-${m.id}`,
+                time: hhmm(m.created_at),
+                res: fromStored(m),
+              }
+        )
+      );
+    } catch (e) {
+      const entry = resolveError(e);
+      setBubbles([
+        {
+          kind: "system",
+          id: nextId("s"),
+          time: clock(),
+          title: entry.title,
+          detail: entry.detail,
+        },
+      ]);
+    } finally {
+      setRestoring(false);
+    }
+  }, [pending]);
+
+  const startNew = useCallback(() => {
+    if (pending) return;
+    setSessionId(undefined);
+    setBubbles([]);
+    setInput("");
+  }, [pending]);
+
+  const busy = pending || restoring;
+
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 270px", gap: 20, alignItems: "start" }}>
       <div
         className="card"
         style={{ display: "flex", flexDirection: "column", padding: 0, overflow: "hidden", minHeight: 560 }}
       >
-        <Header title={title} health={health} healthError={healthError} />
+        <Header
+          title={title}
+          health={health}
+          healthError={healthError}
+          onNew={startNew}
+          canStartNew={bubbles.length > 0 && !busy}
+        />
 
         {!ready && <NotReady health={health} healthError={healthError} />}
 
@@ -175,10 +281,17 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
             minHeight: 340,
           }}
         >
-          <GuideBubble text={intro} />
-          {bubbles.map((b) => (
-            <BubbleView key={b.id} bubble={b} />
-          ))}
+          {/* 복원 중에는 안내문을 띄우지 않는다 — 빈 화면과 구분돼야 한다 */}
+          {restoring ? (
+            <GuideBubble text="이전 대화를 불러오는 중…" />
+          ) : (
+            <>
+              <GuideBubble text={intro} />
+              {bubbles.map((b) => (
+                <BubbleView key={b.id} bubble={b} />
+              ))}
+            </>
+          )}
           {pending && <Typing />}
           <div ref={bottomRef} />
         </div>
@@ -187,7 +300,7 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
           <textarea
             rows={1}
             value={input}
-            disabled={!ready || pending}
+            disabled={!ready || busy}
             onChange={(e) => setInput(e.target.value)}
             // 한글 조합 중 Enter 로 전송되면 글자가 잘린다 (lib/ime.ts)
             onKeyDown={(e) => {
@@ -222,12 +335,23 @@ export function AgentChat({ title, intro, exampleQuestions, ask }: AgentChatProp
         </div>
       </div>
 
-      <Sidebar
-        health={health}
-        examples={exampleQuestions}
-        disabled={!ready || pending}
-        onPick={(q) => void send(q)}
-      />
+      <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        <SessionList
+          scope={scope}
+          activeId={sessionId ?? null}
+          onOpen={(id) => void openSession(id)}
+          onDeletedActive={startNew}
+          registerReload={(fn) => {
+            reloadSessions.current = fn;
+          }}
+        />
+        <Sidebar
+          health={health}
+          examples={exampleQuestions}
+          disabled={!ready || busy}
+          onPick={(q) => void send(q)}
+        />
+      </div>
     </div>
   );
 }
@@ -237,10 +361,14 @@ function Header({
   title,
   health,
   healthError,
+  onNew,
+  canStartNew,
 }: {
   title: string;
   health: AgentHealth | null;
   healthError: string | null;
+  onNew: () => void;
+  canStartNew: boolean;
 }) {
   // 초록 점은 서버가 configured 라고 말할 때만 켠다 (§2.9)
   const variant = healthError ? "red" : health?.configured ? "green" : "gray";
@@ -271,9 +399,38 @@ function Header({
           {health?.model_id ? `${health.provider} · ${health.model_id}` : "모델 미지정"}
         </span>
       </div>
-      <StatusBadge variant={variant} label={label} dot />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        {/* 대화가 없을 때는 숨긴다 — 이미 새 대화인데 "새 대화" 를 보여주면
+            아무 일도 안 하는 버튼이 된다 */}
+        {canStartNew && (
+          <button
+            type="button"
+            onClick={onNew}
+            style={{
+              border: `1px solid ${T.border}`,
+              background: T.surface,
+              color: T.textSub,
+              borderRadius: 6,
+              fontSize: 11.5,
+              padding: "5px 10px",
+              cursor: "pointer",
+            }}
+          >
+            + 새 대화
+          </button>
+        )}
+        <StatusBadge variant={variant} label={label} dot />
+      </div>
     </div>
   );
+}
+
+/** `2026-08-30T14:03:00` → `오후 2:03`. 저장된 메시지의 시각을 그대로 쓴다 */
+function hhmm(iso: string): string {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ""
+    : d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
 }
 
 function NotReady({ health, healthError }: { health: AgentHealth | null; healthError: string | null }) {

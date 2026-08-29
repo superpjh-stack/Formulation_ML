@@ -41,6 +41,7 @@ export default function ShippingAgentPage() {
       />
       <AgentChat
         title="포장출하 AI Agent"
+        scope="shipping"
         intro={
           "출하 데이터와 사내 기준 문서에 대해 질문해 주세요.\n" +
           "출하 이력, 클레임 현황, 작업표준서·품질기준서의 출하·검사 기준을 다룹니다."
