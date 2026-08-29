@@ -359,6 +359,45 @@ def list_sessions(db: Session = Depends(get_db), pg: PageParams = Depends(),
     })
 
 
+@router.get("/questions/recent", summary="내가 최근 물어본 질문")
+def recent_questions(
+    db: Session = Depends(get_db),
+    scope: str | None = Query(None),
+    limit: int = Query(10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+):
+    """다시 묻기용 목록. **본인 것만.**
+
+    `/agents/sessions` 와 다르다. 세션 목록의 `title` 은 그 대화의 **첫 질문**
+    하나뿐이라, 이어서 물은 후속 질문이 전부 빠진다. 여기서는 `agent_messages`
+    의 user 행을 그대로 최신순으로 낸다.
+
+    같은 문구를 여러 번 물었으면 **가장 최근 것 하나만** 남긴다 — 목록이
+    같은 질문으로 채워지면 다시 묻기 목록으로서 쓸모가 없다.
+    """
+    stmt = (
+        select(AgentMessage.content, func.max(AgentMessage.created_at).label("asked_at"))
+        .join(AgentSession, AgentSession.id == AgentMessage.session_id)
+        .where(
+            AgentMessage.role == "user",
+            AgentMessage.content.isnot(None),
+            AgentSession.user_id == user.id,
+        )
+        .group_by(AgentMessage.content)
+        .order_by(func.max(AgentMessage.created_at).desc())
+        .limit(limit)
+    )
+    if scope:
+        stmt = stmt.where(AgentSession.scope == scope)
+
+    return {
+        "items": [
+            {"question": content, "asked_at": iso(asked_at)}
+            for content, asked_at in db.execute(stmt).all()
+        ]
+    }
+
+
 @router.get("/sessions/{session_id}", summary="대화 재개")
 def get_session(session_id: int, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):

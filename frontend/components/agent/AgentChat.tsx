@@ -38,11 +38,13 @@ import { SessionList } from "@/components/agent/SessionList";
 import {
   getAgentHealth,
   getAgentSession,
+  getRecentQuestions,
   submitAgentFeedback,
   type AgentAnswer,
   type AgentCitation,
   type AgentHealth,
   type AgentSessionMessage,
+  type RecentQuestion,
 } from "@/lib/koryo-api";
 
 export interface AgentChatProps {
@@ -142,6 +144,8 @@ export function AgentChat({ title, scope, intro, exampleQuestions, ask }: AgentC
   const [pending, setPending] = useState(false);
   const [sessionId, setSessionId] = useState<number | undefined>(undefined);
   const [restoring, setRestoring] = useState(false);
+  /** 전송할 때마다 올린다 — 최근 질문 목록이 다시 불러오는 신호 */
+  const [askCount, setAskCount] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
   /** 세션 목록 갱신 함수 — 자식이 등록하고 전송 후 부모가 부른다 */
@@ -187,6 +191,7 @@ export function AgentChat({ title, scope, intro, exampleQuestions, ask }: AgentC
         ]);
         // 새 대화면 목록에 나타나야 하고, 이어가는 대화면 순서가 올라와야 한다
         reloadSessions.current?.();
+        setAskCount((n) => n + 1);
       } catch (err) {
         const entry = resolveError(err);
         setBubbles((prev) => [
@@ -336,6 +341,15 @@ export function AgentChat({ title, scope, intro, exampleQuestions, ask }: AgentC
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+        {/* 질문하기 → 이어가기 → 상태 순. 무엇을 물을지가 먼저 오는 것이
+            사용 흐름에 맞고, 이어가기는 이미 물어본 사람만 쓴다 */}
+        <QuestionPanel
+          scope={scope}
+          examples={exampleQuestions}
+          disabled={!ready || busy}
+          onPick={(q) => void send(q)}
+          reloadKey={askCount}
+        />
         <SessionList
           scope={scope}
           activeId={sessionId ?? null}
@@ -345,12 +359,7 @@ export function AgentChat({ title, scope, intro, exampleQuestions, ask }: AgentC
             reloadSessions.current = fn;
           }}
         />
-        <Sidebar
-          health={health}
-          examples={exampleQuestions}
-          disabled={!ready || busy}
-          onPick={(q) => void send(q)}
-        />
+        <Sidebar health={health} />
       </div>
     </div>
   );
@@ -705,46 +714,136 @@ function Typing() {
 }
 
 // ── 우측 패널 ───────────────────────────────────────────────────────────
-function Sidebar({
-  health,
+/**
+ * 질문 패널 — [예시 | 최근] 탭.
+ *
+ * 둘을 따로 카드로 쌓지 않는다. 우측 패널은 270px 인데 예시 10개 + 최근 10개 +
+ * 이전 대화 + 구성 상태를 세로로 쌓으면 채팅 영역을 한참 넘어간다. 그리고
+ * 둘은 **같은 동작**(질문하기)이라 한 자리에서 고르는 것이 맞다.
+ *
+ * ⚠ `이전 대화` 는 이 탭에 넣지 않았다. 그건 **다른 동작**이다 —
+ *   최근 질문은 *다시 묻기*(새 대화), 이전 대화는 *이어가기*(맥락 유지)다.
+ *   생김새가 비슷하다고 같은 자리에 두면 어느 쪽이 실행될지 알 수 없다.
+ */
+function QuestionPanel({
+  scope,
   examples,
   disabled,
   onPick,
+  reloadKey,
 }: {
-  health: AgentHealth | null;
+  scope: string;
   examples: readonly string[];
   disabled: boolean;
   onPick: (q: string) => void;
+  /** 값이 바뀌면 최근 질문을 다시 불러온다 (전송 직후) */
+  reloadKey: number;
 }) {
+  const [tab, setTab] = useState<"example" | "recent">("example");
+  const [recent, setRecent] = useState<RecentQuestion[] | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    getRecentQuestions(scope, 10)
+      .then((r) => alive && setRecent(r.items))
+      .catch(() => alive && setRecent([]));
+    return () => {
+      alive = false;
+    };
+  }, [scope, reloadKey]);
+
+  const items = tab === "example" ? [...examples] : (recent ?? []).map((r) => r.question);
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-      <div className="card">
-        <h3 style={{ fontSize: 12.5, fontWeight: 700, margin: "0 0 10px", color: T.text }}>예시 질문</h3>
-        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
-          {examples.map((q) => (
-            <button
-              key={q}
-              type="button"
-              disabled={disabled}
-              onClick={() => onPick(q)}
-              style={{
-                textAlign: "left",
-                padding: "8px 10px",
-                borderRadius: 7,
-                border: `1px solid ${T.border}`,
-                background: disabled ? T.surfaceSubtle : T.surface,
-                color: disabled ? T.textMuted : T.textSub,
-                fontSize: 12,
-                lineHeight: 1.5,
-                cursor: disabled ? "not-allowed" : "pointer",
-              }}
-            >
-              {q}
-            </button>
-          ))}
-        </div>
+    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ display: "flex", borderBottom: `1px solid ${T.border}` }}>
+        {([
+          ["example", "예시 질문", examples.length],
+          ["recent", "최근 질문", recent?.length ?? null],
+        ] as const).map(([key, label, count]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setTab(key)}
+            aria-pressed={tab === key}
+            style={{
+              flex: 1,
+              border: "none",
+              borderBottom: `2px solid ${tab === key ? T.primary : "transparent"}`,
+              background: "transparent",
+              color: tab === key ? T.primary : T.textMuted,
+              fontWeight: tab === key ? 700 : 500,
+              fontSize: 12,
+              padding: "10px 6px",
+              cursor: "pointer",
+            }}
+          >
+            {label}
+            {count !== null && count > 0 && (
+              <span style={{ fontSize: 10.5, marginLeft: 4, fontWeight: 400 }}>{count}</span>
+            )}
+          </button>
+        ))}
       </div>
 
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          padding: 10,
+          maxHeight: 300,
+          overflowY: "auto",
+        }}
+      >
+        {/* 로딩과 "없음" 을 구분한다 */}
+        {tab === "recent" && recent === null && (
+          <p style={{ margin: 0, padding: 4, fontSize: 11.5, color: T.textMuted }}>
+            불러오는 중…
+          </p>
+        )}
+        {tab === "recent" && recent !== null && recent.length === 0 && (
+          <p style={{ margin: 0, padding: 4, fontSize: 11.5, color: T.textMuted, lineHeight: 1.6 }}>
+            아직 물어본 질문이 없습니다.
+            <br />
+            예시 질문부터 눌러 보세요.
+          </p>
+        )}
+
+        {items.map((q, i) => (
+          <button
+            key={`${tab}-${i}-${q}`}
+            type="button"
+            disabled={disabled}
+            onClick={() => onPick(q)}
+            title={q}
+            style={{
+              textAlign: "left",
+              padding: "8px 10px",
+              borderRadius: 7,
+              border: `1px solid ${T.border}`,
+              background: disabled ? T.surfaceSubtle : T.surface,
+              color: disabled ? T.textMuted : T.textSub,
+              fontSize: 12,
+              lineHeight: 1.5,
+              cursor: disabled ? "not-allowed" : "pointer",
+              display: "-webkit-box",
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: "vertical",
+              overflow: "hidden",
+            }}
+          >
+            {q}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ health }: { health: AgentHealth | null }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
       <div className="card">
         <h3 style={{ fontSize: 12.5, fontWeight: 700, margin: "0 0 10px", color: T.text }}>구성 상태</h3>
         <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "6px 10px", fontSize: 11.5 }}>

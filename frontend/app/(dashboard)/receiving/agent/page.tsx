@@ -27,12 +27,27 @@ import { AgentChat } from "@/components/agent/AgentChat";
 import { askReceivingAgent } from "@/lib/koryo-api";
 import { PageHeader, PageShell } from "../../_g1/ui";
 
-/** `SF-AD2` §1.2 `FR-R-05` 본문 + 실제 코퍼스(WS-KS-001·QS-KS-001)로 답할 수 있는 것 */
+/**
+ * 후보 질문 10개. **전부 실제로 답변 가능한 것만 골랐다** — 코퍼스(WS-KS-001·
+ * QS-KS-001) 또는 입고 도구 5종으로 근거가 나온다는 것을 확인했다.
+ * 답이 안 나오는 예시를 걸어두면 사용자가 처음 눌러보고 "안 되는구나" 로 끝난다.
+ *
+ * 조회형(도구)과 기준형(문서)을 섞었다. 이 화면이 두 가지를 다 한다는 것을
+ * 예시가 스스로 보여줘야 한다.
+ */
 const EXAMPLES = [
+  // 조회 — 입고 도구
   "SUP_A 최근 90일 성분 편차가 어땠어?",
   "공급사별 Sn 편차 안정성을 비교해줘",
+  "최근 30일 입고 이력을 보여줘",
+  "원재료 재고가 얼마나 남았어?",
+  // 기준 — 문서
   "입고 원재료 성분은 무엇을 기준으로 등록해?",
+  "SAC305 의 Ag 규격이 몇 % 야?",
   "무연 제품 납 상한이 얼마야?",
+  "수입검사는 무엇을 확인해?",
+  "불순물 허용 한도가 어떻게 돼?",
+  "공급사 성적서 값을 그대로 입력해도 돼?",
 ] as const;
 
 export default function ReceivingAgentPage() {

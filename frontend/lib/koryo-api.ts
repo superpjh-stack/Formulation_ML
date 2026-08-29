@@ -1064,6 +1064,22 @@ export const getAgentSession = (id: number) =>
 export const deleteAgentSession = (id: number) =>
   apiDelete<void>(`/agents/sessions/${id}`);
 
+export interface RecentQuestion {
+  question: string;
+  asked_at: string;
+}
+
+/**
+ * 다시 묻기용 최근 질문. **`getAgentSessions` 와 다르다.**
+ *
+ * 세션 목록의 `title` 은 그 대화의 **첫 질문** 하나뿐이라 후속 질문이 전부
+ * 빠진다. 이쪽은 실제로 물어본 문장을 최신순으로 준다(중복은 최근 것만).
+ */
+export const getRecentQuestions = (scope?: string, limit = 10) =>
+  apiGet<{ items: RecentQuestion[] }>(
+    `/agents/questions/recent${qs({ scope, limit })}`
+  );
+
 export const askMixingAgent = (question: string) =>
   apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>(
     '/agents/mixing',

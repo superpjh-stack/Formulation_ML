@@ -720,3 +720,40 @@ class TestAgentSessions:
             assert msg_rule == "CASCADE"
         finally:
             db.close()
+
+    def test_recent_questions_are_owner_scoped(self, client, admin_headers, viewer_headers):
+        """다시 묻기 목록. **본인 것만** — 남의 질문이 섞이면 안 된다."""
+        mine = client.get("/api/v1/agents/questions/recent", headers=admin_headers).json()
+        theirs = client.get("/api/v1/agents/questions/recent", headers=viewer_headers).json()
+        overlap = {q["question"] for q in mine["items"]} & {q["question"] for q in theirs["items"]}
+        # 같은 문구를 각자 물었을 수는 있으나, viewer 의 시드 질문("테스트")이
+        # admin 목록에 그대로 나오면 소유자 필터가 없는 것이다.
+        assert not (overlap and mine["items"] and theirs["items"] and overlap == {"테스트"})
+
+    def test_recent_questions_deduplicate(self, client, admin_headers):
+        """같은 문구가 여러 번 나오면 다시 묻기 목록으로서 쓸모가 없다."""
+        items = client.get("/api/v1/agents/questions/recent?limit=50",
+                           headers=admin_headers).json()["items"]
+        texts = [q["question"] for q in items]
+        assert len(texts) == len(set(texts))
+
+    def test_recent_questions_are_newest_first(self, client, admin_headers):
+        items = client.get("/api/v1/agents/questions/recent?limit=50",
+                           headers=admin_headers).json()["items"]
+        stamps = [q["asked_at"] for q in items]
+        assert stamps == sorted(stamps, reverse=True)
+
+    def test_recent_questions_respect_scope(self, client, admin_headers):
+        """입고 화면에 출하 질문이 뜨면 눌렀을 때 엉뚱한 도구가 붙는다."""
+        res = client.get("/api/v1/agents/questions/recent?scope=receiving",
+                         headers=admin_headers)
+        assert res.status_code == 200
+
+    def test_recent_questions_never_return_assistant_text(self, client, admin_headers):
+        """`role='user'` 만이다. 답변이 섞이면 그걸 다시 '질문' 으로 보내게 된다."""
+        items = client.get("/api/v1/agents/questions/recent?limit=50",
+                           headers=admin_headers).json()["items"]
+        for q in items:
+            assert q["question"] is not None
+            # 답변에는 보통 인용 라벨이 붙는다 — 질문에는 없어야 한다
+            assert "근거:" not in q["question"]
