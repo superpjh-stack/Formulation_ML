@@ -374,23 +374,48 @@ def cmd_check() -> int:
 
 
 def cmd_print(with_answers: bool) -> int:
+    """질문지를 마크다운으로 낸다.
+
+    ⚠ **문항 수를 제목이나 파일명에 박지 않는다.** 초판은 "질문 10개" 였는데
+      출하 문항 5개를 추가한 뒤에도 문서가 그대로 남아, 코드보다 5문항 뒤처진
+      채 「이렇게 답하면 오답: 계산만으로 합격」 같은 **이미 걷어낸 채점 기준**을
+      계속 보여주고 있었다 (실측 2026-08-30). 개수는 세어서 쓴다.
+    """
     kinds = {
         "lookup": "단일 조회", "table": "표 조회", "compute": "계산",
-        "multi": "복수 절 종합", "negative": "함정 — 문서에 없는 개념",
+        "multi": "복수 절 종합", "data": "DB 조회 (도구 호출)",
+        "negative": "함정 — 답할 근거가 없는 질문",
     }
-    print("# 현장 문서 2종으로 답할 수 있는 질문 10개\n")
-    print("대상: 작업표준서 WS-KS-001 Rev.0 · 품질기준서 QS-KS-001 Rev.0\n")
-    for q in QUESTIONS + SHIPPING_QUESTIONS:
-        print(f"## {q.no}. {q.question}")
-        print(f"\n- 유형: {kinds.get(q.kind, q.kind)}")
-        print(f"- 근거: {' + '.join(f'{d.split()[0]} {h}' for d, h in q.must_hit)}")
-        if with_answers:
-            print(f"\n**정답**\n\n{q.answer}\n")
-            if q.must_not:
-                print(f"- 이렇게 답하면 오답: {' · '.join(q.must_not)}")
-            if q.note:
-                print(f"- 채점 메모: {q.note}")
-        print()
+    total = len(QUESTIONS) + len(SHIPPING_QUESTIONS)
+    print(f"# AI Agent 평가셋 — {total}문항\n")
+    print("`scripts/evalset.py` 가 정본이다. **이 문서는 거기서 생성된다** —")
+    print("직접 고치지 말고 `scripts/evalset.py --answers > 이_파일` 로 다시 만든다.\n")
+    print("| 구분 | 문항 | 근거 | 검증 |")
+    print("|---|---|---|---|")
+    print(f"| 문서 근거 | {len(QUESTIONS)} | WS-KS-001 · QS-KS-001 | `--check` 가 청크 대조 |")
+    print(f"| DB 근거 | {len(SHIPPING_QUESTIONS)} | 출하 도구 호출 | 도구 미호출이면 실패 |\n")
+
+    for group, items in (
+        ("문서 근거 — 두 화면 모두에서 답해야 한다", QUESTIONS),
+        ("DB 근거 — 출하 화면 전용 (도구를 써야만 답할 수 있다)", SHIPPING_QUESTIONS),
+    ):
+        print(f"\n---\n\n# {group}\n")
+        for q in items:
+            print(f"## {q.no}. {q.question}\n")
+            print(f"- 유형: {kinds.get(q.kind, q.kind)}")
+            if q.must_hit:
+                print(f"- 근거: {' + '.join(f'{d.split()[0]} {h}' for d, h in q.must_hit)}")
+            if q.must_call:
+                print(f"- 호출해야 할 도구: `{'`, `'.join(q.must_call)}`")
+            if with_answers:
+                print(f"\n**정답**\n\n{q.answer}\n")
+                # `must_say` 는 채점 기준이다. 답을 보여주면서 기준을 숨길 이유가 없다.
+                print(f"- 반드시 포함: {' · '.join(q.must_say)}")
+                if q.must_not:
+                    print(f"- 이렇게 답하면 오답: {' · '.join(q.must_not)}")
+                if q.note:
+                    print(f"- 채점 메모: {q.note}")
+            print()
     return 0
 
 
