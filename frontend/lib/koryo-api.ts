@@ -1122,10 +1122,25 @@ export const requestAgentAnalysis = (body: {
   date_to?: string;
 }) => apiPost<{ report: string; charts: unknown[]; latency_ms: number }>('/agents/analysis', body, AGENT_TIMEOUT_MS);
 
-export const requestAgentDecision = (lotId: string) =>
-  apiPost<{ root_causes: string[]; recommendations: string[]; confidence: number }>(
+/** FE-RT-40 의사결정 지원 — LOT 하나의 이상 소견 + 표준이 규정한 조치 */
+export interface AgentDecision extends AgentAnswer {
+  /**
+   * 🔴 **"관측된 이상" 이지 확인된 근본 원인이 아니다.** 서버가 데이터에서
+   * 결정적으로 뽑은 것이고 LLM 이 만들지 않는다. 화면은 `disclaimer` 를
+   * 반드시 함께 보여준다 — 목록 형태는 사람이 확인된 사실로 읽는다.
+   */
+  root_causes: string[];
+  /** 작업표준서·품질기준서가 그 이상에 대해 규정한 조치. 지어낸 것이 아니다 */
+  recommendations: string[];
+  /** 🔴 **항상 null.** 신뢰도를 계산할 근거가 없다 — 숫자를 넣으면 지어낸 지표다 */
+  confidence: number | null;
+  disclaimer: string;
+}
+
+export const requestAgentDecision = (lotId: string, sessionId?: number) =>
+  apiPost<AgentDecision>(
     '/agents/decision',
-    { lot_id: lotId },
+    { lot_id: lotId, session_id: sessionId ?? null },
     AGENT_TIMEOUT_MS
   );
 

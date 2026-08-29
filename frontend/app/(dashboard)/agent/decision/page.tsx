@@ -46,7 +46,17 @@ import {
 type Result =
   | { kind: "pending"; message: string }
   | { kind: "error"; message: string; status: number | null }
-  | { kind: "ok"; rootCauses: string[]; recommendations: string[]; confidence: number | null };
+  | {
+      kind: "ok";
+      rootCauses: string[];
+      recommendations: string[];
+      confidence: number | null;
+      /** 🔴 목록이 "확인된 원인" 으로 읽히지 않게 반드시 함께 그린다 */
+      disclaimer: string;
+      /** 서술 답변 — 소견을 풀어 쓴 것. 근거 인용이 붙는다 */
+      answer: string | null;
+      sources: number;
+    };
 
 export default function AgentDecisionPage() {
   const [lotId, setLotId] = useState("");
@@ -77,6 +87,9 @@ export default function AgentDecisionPage() {
         rootCauses: data.root_causes ?? [],
         recommendations: data.recommendations ?? [],
         confidence: typeof data.confidence === "number" ? data.confidence : null,
+        disclaimer: data.disclaimer ?? "",
+        answer: data.answer ?? null,
+        sources: (data.sources ?? []).length,
       });
     } catch (err) {
       const status = errStatus(err);
@@ -94,8 +107,6 @@ export default function AgentDecisionPage() {
   return (
     <PageShell>
       <PageHeader title="의사결정 지원" subtitle="불량 LOT 원인 분석 및 개선 방안 추천" />
-
-      <PendingBanner note="대상 LOT 목록은 실제 데이터입니다. 원인 분석 요청도 실제로 전송되지만, v1 에서는 분석 기능이 제공되지 않습니다." />
 
       <FilterBar>
         <Field label="대상 LOT (필수)" htmlFor="dec-lot" width={260}>
@@ -188,10 +199,44 @@ export default function AgentDecisionPage() {
         {/* v1 에서는 도달하지 않는다. 서버가 응답을 주기 시작하면 그때 그린다 */}
         {!running && result?.kind === "ok" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {/* 🔴 목록보다 **먼저** 온다. 목록을 읽고 나서 단서를 보면 늦다 */}
+            {result.disclaimer && (
+              <div
+                style={{
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  border: `1px solid ${T.border}`,
+                  background: T.surfaceSubtle,
+                  fontSize: 12,
+                  color: T.textSub,
+                  lineHeight: 1.65,
+                }}
+              >
+                {result.disclaimer}
+              </div>
+            )}
+
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <ListCard title="추정 원인" items={result.rootCauses} />
-              <ListCard title="개선 방안" items={result.recommendations} />
+              {/* "추정 원인" 이 아니라 관측 사실이다 — 이름을 맞춘다 */}
+              <ListCard title="관측된 이상" items={result.rootCauses} />
+              <ListCard title="표준이 규정한 조치" items={result.recommendations} />
             </div>
+
+            {result.answer && (
+              <div className="card">
+                <h3 style={{ fontSize: 12.5, fontWeight: 700, margin: "0 0 8px", color: T.text }}>
+                  설명 {result.sources > 0 && (
+                    <span style={{ fontWeight: 400, color: T.textMuted }}>
+                      · 근거 {result.sources}건
+                    </span>
+                  )}
+                </h3>
+                <p style={{ margin: 0, fontSize: 13, color: T.textSub,
+                            whiteSpace: "pre-wrap", lineHeight: 1.7 }}>
+                  {result.answer}
+                </p>
+              </div>
+            )}
             {/*
               `confidence` 범위(0~1 인지 0~100 인지)가 계약 미정의다.
               0~1 로 가정해 백분율로 표시하되, 1 을 넘으면 그대로 숫자만 보여준다 (§4).

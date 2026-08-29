@@ -163,3 +163,95 @@ def test_run_all_reports_what_it_did(db):
     stats = retention.run_all(db)
     assert set(stats) == {"masked", "purged"}
     assert stats["masked"] >= 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FE-RT-40 의사결정 지원 — 소견은 **데이터에서** 나온다
+# ══════════════════════════════════════════════════════════════════════════
+class TestDecisionAnalysis:
+    """🔴 `root_causes` 를 LLM 이 만들면 안 된다.
+
+    목록 형태로 나오면 사람은 그것을 확인된 사실로 읽는다. 서술문이면
+    "~로 보입니다" 로 넘길 수 있지만 불릿에는 그런 여지가 없다.
+    그래서 `decision.analyze()` 는 결정적 코드이고 LLM 을 부르지 않는다.
+    """
+
+    TH = {
+        "dev_warn_sn": 2.0, "dev_warn_ag": 0.3, "dev_warn_cu": 0.1,
+        "temp_warn_c": 255.0, "quality_pass_score": 70.0,
+    }
+
+    def _trace(self, **over):
+        base = {
+            "lots": {"lot_id": "LOT-X", "quality_score": 85.0, "temperature": 240.0},
+            "components": [{"sn_deviation": 0.1, "ag_deviation": 0.05, "cu_deviation": 0.01}],
+            "claims": [],
+        }
+        base.update(over)
+        return base
+
+    def test_clean_lot_has_no_findings(self):
+        from src.agent import decision
+
+        r = decision.analyze(self._trace(), self.TH)
+        assert r.root_causes == []
+        assert r.recommendations == []
+
+    def test_deviation_over_threshold_is_reported(self):
+        from src.agent import decision
+
+        r = decision.analyze(
+            self._trace(components=[{"sn_deviation": -2.851}]), self.TH
+        )
+        assert any("Sn" in c and "2.851" in c for c in r.root_causes)
+
+    def test_deviation_exactly_at_threshold_is_not_reported(self):
+        """경계 — 임계 '초과' 다. 같으면 아직 경고가 아니다."""
+        from src.agent import decision
+
+        r = decision.analyze(self._trace(components=[{"sn_deviation": 2.0}]), self.TH)
+        assert r.root_causes == []
+
+    def test_quality_finding_says_it_is_not_a_verdict(self):
+        """🔴 ML 점수를 합부 판정으로 읽히게 두면 안 된다 (CR-STD-001)."""
+        from src.agent import decision
+
+        r = decision.analyze(self._trace(lots={"lot_id": "L", "quality_score": 61.9}), self.TH)
+        assert any("합부 판정 아님" in c for c in r.root_causes)
+
+    def test_recommendations_are_deduplicated_per_kind(self):
+        """편차 3개가 나도 배합 조치는 한 번만 나온다."""
+        from src.agent import decision
+
+        r = decision.analyze(
+            self._trace(components=[{"sn_deviation": -3.0, "ag_deviation": -0.5,
+                                     "cu_deviation": 0.4}]),
+            self.TH,
+        )
+        assert len(r.root_causes) == 3
+        assert len(r.recommendations) == 1
+
+    def test_recommendations_cite_the_standard(self):
+        """조치 문장은 문서에서 온다. 지어낸 것이 아님을 근거로 보인다."""
+        from src.agent import decision
+
+        r = decision.analyze(self._trace(components=[{"sn_deviation": -3.0}]), self.TH)
+        assert all("근거:" in x and "KS-001" in x for x in r.recommendations)
+
+    def test_temperature_finding_surfaces_the_known_conflict(self):
+        """255°C 는 작업표준서 조업 온도와 맞지 않는 미해결 사항이다."""
+        from src.agent import decision
+
+        r = decision.analyze(self._trace(lots={"lot_id": "L", "temperature": 259.4}), self.TH)
+        assert any("CR-STD-001" in x for x in r.recommendations)
+
+    def test_missing_values_are_skipped_not_guessed(self):
+        """값이 없으면 판정하지 않는다. 0 으로 보지 않는다."""
+        from src.agent import decision
+
+        r = decision.analyze(
+            {"lots": {"lot_id": "L", "quality_score": None, "temperature": None},
+             "components": [{"sn_deviation": None}], "claims": []},
+            self.TH,
+        )
+        assert r.root_causes == []

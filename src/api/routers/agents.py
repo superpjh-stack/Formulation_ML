@@ -15,7 +15,8 @@ v1.1 게이트는 **`/agents/receiving`(FE-RT-10) · `/agents/shipping`(FE-RT-20
 | `POST /agents/reindex` | 실동작 (**admin 전용**) | §3.7 |
 | `POST /agents/query` | 실동작 (**문서 전용**) | FE-RT-38 |
 | `POST /agents/mixing` | 실동작 | FE-RT-15 |
-| `/analysis` `/decision` `/recommendations` | **501 유지** | 선택 |
+| `POST /agents/decision` | 실동작 | FE-RT-40 |
+| `/analysis` `/recommendations` | **501 유지** | 선택 |
 
 **`/agents/logs` 를 admin 전용으로 좁혔다** (§7.1). `agent_runs.prompt_sent` 에
 외부 송출 전문이 들어가므로 다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
@@ -36,6 +37,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from src.agent import config, embed, orchestrator, providers, retrieval
+from src.agent import tools as tool_registry
+from src.agent.tools._base import ToolError
 from src.api.deps import get_current_user, get_db, require_roles
 from src.api.errors import NOT_IMPLEMENTED_DETAIL
 from src.api.middleware import set_audit
@@ -97,6 +100,40 @@ class AgentAnswerOut(BaseModel):
     #: 🔴 **수렴 실패면 `optimization_success:false` 를 담아 그대로 준다.**
     #:    실패를 성공으로 위장하지 않는다 (§5 오류 계약).
     recommended_ratios: dict | None = None
+
+
+class DecisionIn(BaseModel):
+    lot_id: str = Field(min_length=1, max_length=30)
+    #: 계약(§7.1)에는 `{lot_id}` 뿐이지만 대화 이력에 남기려면 세션이 필요하다.
+    #: 생략하면 새 세션을 연다 — `AgentAskIn` 과 같은 규약이다.
+    session_id: int | None = None
+
+
+class DecisionOut(BaseModel):
+    """FE-RT-40. `AgentAnswerOut` + 구조화된 소견.
+
+    🔴 `root_causes`·`recommendations` 는 **LLM 이 만들지 않는다.**
+       목록 형태로 나오면 사람은 그것을 확인된 사실로 읽는다. 서술문이면
+       "~로 보입니다" 로 넘길 수 있지만 불릿에는 그런 여지가 없다.
+       그래서 데이터에서 직접 읽히는 것만 `src/agent/decision.py` 가 뽑는다.
+    """
+
+    message_id: int | None
+    session_id: int
+    answer: str | None
+    answer_status: str
+    sources: list[CitationOut]
+    violations: list[str] = []
+    latency_ms: int
+    provider: str | None = None
+    model_id: str | None = None
+    root_causes: list[str]
+    recommendations: list[str]
+    #: 🔴 **항상 `null` 이다.** 계약에 필드가 있지만 신뢰도를 계산할 근거가 없다.
+    #:    숫자를 넣으면 그 순간 지어낸 지표가 된다 — 화면은 `null` 을 "—" 로 그린다.
+    confidence: float | None = None
+    #: 목록의 성격을 화면이 오해하지 않도록 함께 보낸다
+    disclaimer: str
 
 
 class AgentHealthOut(BaseModel):
@@ -353,6 +390,78 @@ def mixing_agent(body: AgentAskIn, request: Request, db: Session = Depends(get_d
     `sales` 는 이 스코프에 도구가 없어 문서 근거로만 답한다 (`ROLE_SCOPES`).
     """
     return _ask("mixing", body, request, db, user)
+
+
+@router.post("/decision", response_model=DecisionOut, summary="FE-RT-40 의사결정 지원")
+def decision_agent(body: DecisionIn, request: Request, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """LOT 하나의 이상 소견 + 표준이 규정한 조치.
+
+    흐름이 다른 화면과 다르다 — **도구를 LLM 이 고르지 않는다.** 질문이 아니라
+    `lot_id` 하나가 입력이므로 `lot_trace_full` 을 우리가 직접 부르고, 이상
+    판정도 결정적 코드(`decision.analyze`)가 한다. LLM 은 그 결과를 **읽기 좋게
+    풀어 쓰는 일만** 한다.
+    """
+    from src.agent import decision as decision_mod
+    from src.agent import rules as rules_mod
+
+    lot_id = body.lot_id.strip()
+    session = _session_for(db, body.session_id, "shipping", user)
+
+    try:
+        trace = tool_registry.run(
+            db, "lot_trace_full", scope="shipping", role=user.role, lot_id=lot_id
+        )
+    except ToolError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    if not (trace.result.get("lots") or {}).get("lot_id"):
+        raise HTTPException(status_code=404, detail="LOT 을 찾을 수 없습니다")
+
+    snapshot = rules_mod.load(db)
+    report = decision_mod.analyze(
+        trace.result,
+        {
+            "dev_warn_sn": snapshot.dev_warn_sn,
+            "dev_warn_ag": snapshot.dev_warn_ag,
+            "dev_warn_cu": snapshot.dev_warn_cu,
+            "temp_warn_c": snapshot.temp_warn_c,
+            "quality_pass_score": snapshot.quality_pass_score,
+        },
+    )
+
+    # 소견을 질문으로 바꿔 서술을 맡긴다. 이상이 없으면 그것도 사실이다.
+    if report.findings:
+        question = (
+            f"{lot_id} 에서 다음 이상이 관측됐다. 각각이 무엇을 뜻하고 "
+            f"작업표준서·품질기준서가 어떤 조치를 규정하는지 설명해줘.\n"
+            + "\n".join(f"- {c}" for c in report.root_causes)
+        )
+    else:
+        question = f"{lot_id} 의 이력을 요약해줘. 임계를 넘은 항목은 없다."
+
+    body2 = AgentAskIn(question=question, session_id=session.id)
+    answer = _ask("shipping", body2, request, db, user)
+
+    return DecisionOut(
+        message_id=answer.message_id,
+        session_id=answer.session_id,
+        answer=answer.answer,
+        answer_status=answer.answer_status,
+        sources=answer.sources,
+        violations=answer.violations,
+        latency_ms=answer.latency_ms,
+        provider=answer.provider,
+        model_id=answer.model_id,
+        root_causes=report.root_causes,
+        recommendations=report.recommendations,
+        confidence=None,
+        disclaimer=(
+            "위 항목은 **관측된 이상**이며 확인된 근본 원인이 아닙니다. "
+            "편차가 났다는 사실과 그것이 불량의 원인이라는 것은 다른 말입니다. "
+            "조치는 작업표준서·품질기준서가 규정한 내용이며, 최종 판단은 담당자가 합니다."
+        ),
+    )
 
 
 @router.post("/query", response_model=AgentAnswerOut, summary="FE-RT-38 자연어 질의")
@@ -667,7 +776,6 @@ def _not_implemented():
 
 _STILL_501: tuple[tuple[str, str, str, str], ...] = (
     ("/analysis", "POST", "FE-RT-39", "자동 분석 리포트"),
-    ("/decision", "POST", "FE-RT-40", "의사결정 지원"),
     ("/recommendations", "GET", "FE-RT-41", "추천 이력"),
 )
 

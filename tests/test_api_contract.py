@@ -289,10 +289,10 @@ class TestErrorContract:
         입고(FE-RT-10)·출하(FE-RT-20) 는 필수로 승격돼 실동작한다. 나머지는
         여전히 "준비 중" 이며 **가짜 응답으로 채우지 않는다.**
         """
-        # 2026-08-30 에 `/query`(문서 전용)와 `/mixing` 을 열었다.
-        # 남은 셋은 응답 구조가 더 필요하다 — charts[] · root_causes[] ·
-        # agent_recommendations 테이블. 가짜로 채우지 않는다.
-        posts = ["/agents/analysis", "/agents/decision"]
+        # 2026-08-30 에 `/query`·`/mixing`·`/decision` 을 열었다.
+        # `/analysis` 는 `charts[]` 의 원소 스키마가 계약에 없어 남긴다 —
+        # 스키마를 지어내면 화면이 그 형태에 묶인다.
+        posts = ["/agents/analysis"]
         for path in posts:
             res = client.post(f"/api/v1{path}", json={}, headers=viewer_headers)
             assert res.status_code == 501, path
