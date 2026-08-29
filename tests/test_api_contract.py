@@ -283,22 +283,30 @@ class TestErrorContract:
         })
         assert res.status_code == 400
 
-    def test_501_optional_agent_endpoints(self, client, viewer_headers):
-        """`agent-architecture.md` §7.2 — v1.1 게이트 **밖**의 5종은 501 을 유지한다.
+    def test_recommendations_stays_501(self, client, viewer_headers):
+        """FE-RT-41 은 `agent_recommendations` 테이블이 필요하다.
 
-        입고(FE-RT-10)·출하(FE-RT-20) 는 필수로 승격돼 실동작한다. 나머지는
-        여전히 "준비 중" 이며 **가짜 응답으로 채우지 않는다.**
+        설계서 §6.2 가 **축소안으로 직접 제외**한 테이블이다 — v1.1 게이트 밖의
+        선택 화면이라 만들지 않았다. 가짜 목록으로 채우지 않는다.
         """
-        # 2026-08-30 에 `/query`·`/mixing`·`/decision` 을 열었다.
-        # `/analysis` 는 `charts[]` 의 원소 스키마가 계약에 없어 남긴다 —
-        # 스키마를 지어내면 화면이 그 형태에 묶인다.
-        posts = ["/agents/analysis"]
-        for path in posts:
-            res = client.post(f"/api/v1{path}", json={}, headers=viewer_headers)
-            assert res.status_code == 501, path
-            assert res.json()["detail"] == "미구현 — v1 범위 밖"
         res = client.get("/api/v1/agents/recommendations", headers=viewer_headers)
         assert res.status_code == 501
+        assert res.json()["detail"] == "미구현 — v1 범위 밖"
+
+    def test_analysis_never_invents_a_chart_schema(self, client, admin_headers):
+        """🔴 `charts[]` 의 **원소 스키마가 계약에 없다** (§7.1).
+
+        지어내면 화면이 그 형태에 묶이고, 실제 스키마가 정해지면 양쪽을 다시
+        갈아야 한다. 빈 배열을 조용히 두지도 않는다 — 없는 **이유**를 함께 준다.
+        """
+        res = client.post("/api/v1/agents/analysis", headers=admin_headers,
+                          json={"topic": "테스트"})
+        if res.status_code == 501:
+            pytest.skip("제공자 미설정")
+        assert res.status_code == 200
+        body = res.json()
+        assert body["charts"] == []
+        assert body["charts_note"], "차트가 없는 이유를 말해야 한다"
 
     def test_unset_provider_is_501_not_503(self, client, viewer_headers, monkeypatch):
         """§7.6 — 제공자 미설정은 **501**(미구현)이지 503(일시 장애)이 아니다.

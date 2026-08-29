@@ -37,7 +37,6 @@ import {
 } from "../../_g1/ui";
 import {
   FieldError,
-  PendingBanner,
   PendingResult,
   errStatus,
   errText,
@@ -51,7 +50,15 @@ const MAX_LOT_ID = 20;
 type Result =
   | { kind: "pending"; message: string }
   | { kind: "error"; message: string; status: number | null }
-  | { kind: "report"; report: string; latencyMs: number; charts: unknown[] };
+  | {
+      kind: "report";
+      report: string | null;
+      latencyMs: number;
+      charts: unknown[];
+      /** 차트가 없는 **이유**. 개수만 세는 대신 문장을 보여준다 */
+      chartsNote: string;
+      sources: number;
+    };
 
 export default function AgentAnalysisPage() {
   const [topic, setTopic] = useState("");
@@ -83,6 +90,8 @@ export default function AgentAnalysisPage() {
       setResult({
         kind: "report",
         report: data.report,
+        chartsNote: data.charts_note ?? "",
+        sources: (data.sources ?? []).length,
         latencyMs: data.latency_ms,
         charts: data.charts ?? [],
       });
@@ -103,7 +112,6 @@ export default function AgentAnalysisPage() {
     <PageShell>
       <PageHeader title="분석 요청" subtitle="기간·LOT 지정 AI 분석 리포트 요청" />
 
-      <PendingBanner note="요청은 실제로 서버에 전송되지만, v1 에서는 리포트 생성 기능이 제공되지 않습니다." />
 
       <FilterBar>
         <Field label="분석 주제 (필수)" htmlFor="an-topic" width={280}>
@@ -186,7 +194,7 @@ export default function AgentAnalysisPage() {
 
         {!running && result?.kind === "pending" && (
           <PendingResult
-            detail="AI 분석 리포트 기능은 v1 범위 밖입니다. 서버가 이 요청을 처리하지 않았습니다 (HTTP 501). 입력한 조건은 그대로 유지됩니다."
+            detail="AI Agent 가 구성되지 않아 서버가 요청을 처리하지 않았습니다 (HTTP 501). 관리자에게 문의하세요. 입력한 조건은 그대로 유지됩니다."
             serverMessage={result.message}
           />
         )}
@@ -211,8 +219,9 @@ export default function AgentAnalysisPage() {
           </div>
         )}
 
-        {/* v1 에서는 도달하지 않는다. 서버가 리포트를 주기 시작하면 그때 그린다.
-            `charts[]` 는 원소 스키마가 계약 미정의라 개수만 알린다 */}
+        {/* 2026-08-30 501 해제. `charts[]` 는 여전히 빈 배열이다 —
+            계약에 원소 스키마가 없다. 개수를 세는 대신 **없는 이유**를 보여준다.
+            빈 배열을 조용히 두면 "차트가 안 나오네" 로만 보인다 */}
         {!running && result?.kind === "report" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div
@@ -227,12 +236,18 @@ export default function AgentAnalysisPage() {
                 whiteSpace: "pre-wrap",
               }}
             >
-              {result.report}
+              {/* 🔴 null 이 정상 값이다 — 근거가 없으면 리포트를 만들지 않는다 */}
+              {result.report ?? "근거를 찾지 못해 리포트를 만들지 않았습니다."}
             </div>
             <span style={{ fontSize: 11.5, color: T.textMuted }}>
               응답 시간 {Math.round(result.latencyMs)} ms
-              {result.charts.length > 0 && ` · 차트 ${result.charts.length}개 (스키마 미정의)`}
+              {result.sources > 0 && ` · 근거 ${result.sources}건`}
             </span>
+            {result.chartsNote && (
+              <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.6 }}>
+                {result.chartsNote}
+              </span>
+            )}
           </div>
         )}
       </Section>

@@ -16,7 +16,8 @@ v1.1 게이트는 **`/agents/receiving`(FE-RT-10) · `/agents/shipping`(FE-RT-20
 | `POST /agents/query` | 실동작 (**문서 전용**) | FE-RT-38 |
 | `POST /agents/mixing` | 실동작 | FE-RT-15 |
 | `POST /agents/decision` | 실동작 | FE-RT-40 |
-| `/analysis` `/recommendations` | **501 유지** | 선택 |
+| `POST /agents/analysis` | 실동작 (**차트 없음**) | FE-RT-39 |
+| `/recommendations` | **501 유지** | `agent_recommendations` 테이블 미생성 |
 
 **`/agents/logs` 를 admin 전용으로 좁혔다** (§7.1). `agent_runs.prompt_sent` 에
 외부 송출 전문이 들어가므로 다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
@@ -134,6 +135,36 @@ class DecisionOut(BaseModel):
     confidence: float | None = None
     #: 목록의 성격을 화면이 오해하지 않도록 함께 보낸다
     disclaimer: str
+
+
+class AnalysisIn(BaseModel):
+    topic: str = Field(min_length=1, max_length=200)
+    lot_id: str | None = Field(default=None, max_length=20)
+    date_from: dt.date | None = None
+    date_to: dt.date | None = None
+    session_id: int | None = None
+
+
+class AnalysisOut(BaseModel):
+    """FE-RT-39. 화면은 `report` 를 본문으로 그리고 `charts` 는 개수만 센다.
+
+    🔴 **`charts` 는 항상 빈 배열이다.** 계약(§7.1)에 필드는 있지만 **원소
+       스키마가 정의돼 있지 않다.** 지어내면 화면이 그 형태에 묶이고, 나중에
+       실제 스키마가 정해지면 양쪽을 다시 갈아야 한다. 스키마가 없다는 사실을
+       `charts_note` 로 그대로 알린다 — 빈 배열을 조용히 돌려주고 "차트 없음"
+       으로 보이게 두지 않는다.
+    """
+
+    report: str | None
+    answer_status: str
+    charts: list = []
+    charts_note: str
+    sources: list[CitationOut] = []
+    latency_ms: int
+    message_id: int | None = None
+    session_id: int
+    provider: str | None = None
+    model_id: str | None = None
 
 
 class AgentHealthOut(BaseModel):
@@ -464,6 +495,71 @@ def decision_agent(body: DecisionIn, request: Request, db: Session = Depends(get
     )
 
 
+@router.post("/analysis", response_model=AnalysisOut, summary="FE-RT-39 자동 분석 리포트")
+def analysis_agent(body: AnalysisIn, request: Request, db: Session = Depends(get_db),
+                   user: User = Depends(get_current_user)):
+    """주제·기간·LOT 으로 분석 리포트를 만든다.
+
+    스코프는 `global`(문서 전용)이다. 이 화면은 전 역할이 쓰므로 DB 도구를
+    붙이면 §7.7 의 역할별 통제를 우회한다 — `/query` 와 같은 판단이다.
+
+    다만 `lot_id` 가 주어지면 **그 LOT 하나만** 역할 검사를 거쳐 붙인다.
+    권한이 없으면 조용히 빼지 않고 리포트 안에서 그 사실을 말한다.
+    """
+    parts = [f"분석 주제: {body.topic.strip()}"]
+    if body.date_from or body.date_to:
+        parts.append(f"기간: {body.date_from or '미지정'} ~ {body.date_to or '미지정'}")
+
+    lot_note: str | None = None
+    if body.lot_id:
+        lot_id = body.lot_id.strip()
+        try:
+            trace = tool_registry.run(
+                db, "lot_trace_full", scope="shipping", role=user.role, lot_id=lot_id
+            )
+            lot = (trace.result.get("lots") or {})
+            if lot.get("lot_id"):
+                parts.append(
+                    f"대상 LOT {lot_id} — 상태 {lot.get('status')}, "
+                    f"품질 {lot.get('quality_score')}점, 온도 {lot.get('temperature')}°C"
+                )
+            else:
+                lot_note = f"{lot_id} 을(를) 찾을 수 없어 LOT 정보 없이 분석했습니다."
+        except ToolError:
+            # 🔴 조용히 빼지 않는다. 권한 때문에 빠졌다는 사실을 리포트가 말해야
+            #    사용자가 "왜 이 LOT 얘기가 없지" 를 묻지 않는다.
+            lot_note = (
+                f"{user.role} 역할은 LOT 상세를 조회할 수 없어 "
+                f"{lot_id} 정보 없이 문서 근거로만 분석했습니다."
+            )
+    if lot_note:
+        parts.append(lot_note)
+
+    ask = AgentAskIn(question="\n".join(parts), session_id=body.session_id)
+    answer = _ask("global", ask, request, db, user)
+
+    report = answer.answer
+    if lot_note and report:
+        report = f"{report}\n\n※ {lot_note}"
+
+    return AnalysisOut(
+        report=report,
+        answer_status=answer.answer_status,
+        charts=[],
+        charts_note=(
+            "차트는 제공하지 않습니다 — 계약에 charts[] 원소 스키마가 "
+            "정의돼 있지 않습니다 (agent-architecture.md §7.1). "
+            "필요한 차트 종류가 정해지면 추가합니다."
+        ),
+        sources=answer.sources,
+        latency_ms=answer.latency_ms,
+        message_id=answer.message_id,
+        session_id=answer.session_id,
+        provider=answer.provider,
+        model_id=answer.model_id,
+    )
+
+
 @router.post("/query", response_model=AgentAnswerOut, summary="FE-RT-38 자연어 질의")
 def query_agent(body: AgentAskIn, request: Request, db: Session = Depends(get_db),
                 user: User = Depends(get_current_user)):
@@ -775,7 +871,6 @@ def _not_implemented():
 
 
 _STILL_501: tuple[tuple[str, str, str, str], ...] = (
-    ("/analysis", "POST", "FE-RT-39", "자동 분석 리포트"),
     ("/recommendations", "GET", "FE-RT-41", "추천 이력"),
 )
 

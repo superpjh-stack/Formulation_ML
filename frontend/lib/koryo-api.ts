@@ -1115,12 +1115,30 @@ export const askAgentQuery = (question: string, sessionId?: number) =>
     AGENT_TIMEOUT_MS
   );
 
+/** FE-RT-39 자동 분석 리포트 — 문서 근거 전용(스코프 `global`) */
+export interface AgentAnalysis {
+  /** 🔴 null 일 수 있다 — 근거 0건이면 답변을 만들지 않는다 (§4.6) */
+  report: string | null;
+  answer_status: AgentAnswerStatus;
+  /** 🔴 **항상 빈 배열이다.** 계약에 원소 스키마가 없다 — `charts_note` 참고 */
+  charts: unknown[];
+  /** 차트가 없는 **이유**. 화면은 이 문장을 그대로 보여준다 */
+  charts_note: string;
+  sources: AgentCitation[];
+  latency_ms: number;
+  message_id: number | null;
+  session_id: number;
+  provider: string | null;
+  model_id: string | null;
+}
+
 export const requestAgentAnalysis = (body: {
   topic: string;
   lot_id?: string;
   date_from?: string;
   date_to?: string;
-}) => apiPost<{ report: string; charts: unknown[]; latency_ms: number }>('/agents/analysis', body, AGENT_TIMEOUT_MS);
+  session_id?: number;
+}) => apiPost<AgentAnalysis>('/agents/analysis', body, AGENT_TIMEOUT_MS);
 
 /** FE-RT-40 의사결정 지원 — LOT 하나의 이상 소견 + 표준이 규정한 조치 */
 export interface AgentDecision extends AgentAnswer {
