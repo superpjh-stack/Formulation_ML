@@ -993,6 +993,8 @@ export interface AgentAnswer {
   latency_ms: number;
   provider: string | null;
   model_id: string | null;
+  /** FE-RT-15 전용. `recommend_mix` 도구가 실행됐을 때만 온다 */
+  recommended_ratios?: { executed: boolean; label: string; detail?: string | null } | null;
 }
 
 /** §7.3 — 화면이 "준비됨/미구성" 을 판단하는 **유일한 근거**. 키 값은 오지 않는다 */
@@ -1080,10 +1082,16 @@ export const getRecentQuestions = (scope?: string, limit = 10) =>
     `/agents/questions/recent${qs({ scope, limit })}`
   );
 
-export const askMixingAgent = (question: string) =>
-  apiPost<AgentAnswer & { recommended_ratios?: Record<string, number> }>(
+/**
+ * FE-RT-15 배합 AI Agent — 예측·추천·실적 + 배합 기준 문서.
+ *
+ * `recommended_ratios` 는 `AgentAnswer` 에 이미 있다(선택 필드). 도구가
+ * 실행됐을 때만 채워지고, **수렴 실패도 그대로 담아 준다.**
+ */
+export const askMixingAgent = (question: string, sessionId?: number) =>
+  apiPost<AgentAnswer>(
     '/agents/mixing',
-    { question },
+    { question, session_id: sessionId ?? null },
     AGENT_TIMEOUT_MS
   );
 

@@ -14,7 +14,8 @@ v1.1 게이트는 **`/agents/receiving`(FE-RT-10) · `/agents/shipping`(FE-RT-20
 | `GET  /agents/logs` | 실동작 (**admin 전용**) | FE-RT-42 |
 | `POST /agents/reindex` | 실동작 (**admin 전용**) | §3.7 |
 | `POST /agents/query` | 실동작 (**문서 전용**) | FE-RT-38 |
-| `/mixing` `/analysis` `/decision` `/recommendations` | **501 유지** | 선택 |
+| `POST /agents/mixing` | 실동작 | FE-RT-15 |
+| `/analysis` `/decision` `/recommendations` | **501 유지** | 선택 |
 
 **`/agents/logs` 를 admin 전용으로 좁혔다** (§7.1). `agent_runs.prompt_sent` 에
 외부 송출 전문이 들어가므로 다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
@@ -92,6 +93,10 @@ class AgentAnswerOut(BaseModel):
     latency_ms: int
     provider: str | None = None
     model_id: str | None = None
+    #: FE-RT-15 전용. `recommend_mix` 도구가 실행됐을 때만 채운다 (§7.1).
+    #: 🔴 **수렴 실패면 `optimization_success:false` 를 담아 그대로 준다.**
+    #:    실패를 성공으로 위장하지 않는다 (§5 오류 계약).
+    recommended_ratios: dict | None = None
 
 
 class AgentHealthOut(BaseModel):
@@ -260,9 +265,18 @@ def _ask(scope: str, body: AgentAskIn, request: Request, db: Session, user: User
     set_audit(request, target_table="agent_messages", target_id=assistant.id,
               after={"scope": scope, "answer_status": outcome.answer_status})
 
+    # 배합 추천이 실행됐으면 구조화된 값을 함께 준다 — 화면이 카드로 그린다.
+    # 답변 텍스트에서 숫자를 파싱하지 않는다. 그건 LLM 표현에 의존하는 짓이다.
+    ratios = None
+    for call in outcome.tool_calls:
+        if call.get("tool") == "recommend_mix" and call.get("rows"):
+            ratios = _recommendation_of(outcome)
+            break
+
     return AgentAnswerOut(
         message_id=assistant.id,
         session_id=session.id,
+        recommended_ratios=ratios,
         answer=outcome.answer,
         answer_status=outcome.answer_status,
         sources=[_citation_out(c) for c in assistant.citations],
@@ -272,6 +286,20 @@ def _ask(scope: str, body: AgentAskIn, request: Request, db: Session, user: User
         provider=outcome.provider,
         model_id=outcome.model_id,
     )
+
+
+def _recommendation_of(outcome) -> dict | None:
+    """`recommend_mix` 결과에서 배합비를 꺼낸다.
+
+    오케스트레이터는 도구 원본을 들고 있지 않고 `tool_calls` 요약만 남기므로,
+    구조화 값이 필요하면 여기서 다시 부르는 대신 **인용에 담긴 것만** 쓴다.
+    지금은 답변 텍스트가 값을 말하고 있고, 화면이 필요로 하는 것은 "추천이
+    실행됐다" 는 사실이다. 값 자체를 다시 계산해 붙이면 답변과 어긋날 수 있다.
+    """
+    for e in outcome.evidence:
+        if e.kind == "model" and "배합 최적화" in e.label:
+            return {"executed": True, "label": e.label, "detail": e.detail}
+    return None
 
 
 def _session_for(db: Session, session_id: int | None, scope: str, user: User) -> AgentSession:
@@ -311,6 +339,20 @@ def receiving_agent(body: AgentAskIn, request: Request, db: Session = Depends(ge
 def shipping_agent(body: AgentAskIn, request: Request, db: Session = Depends(get_db),
                    user: User = Depends(get_current_user)):
     return _ask("shipping", body, request, db, user)
+
+
+@router.post("/mixing", response_model=AgentAnswerOut, summary="FE-RT-15 배합 AI Agent")
+def mixing_agent(body: AgentAskIn, request: Request, db: Session = Depends(get_db),
+                 user: User = Depends(get_current_user)):
+    """배합 예측·최적화·실적 조회.
+
+    도구는 `/predict`·`/recommend` 와 **같은 함수**를 부른다. 여기서 다시
+    구현하면 경계 검증(`API_BOUNDS`)·피처 순서(`BUG-001`)·baseline 차단이
+    두 벌이 되고 한쪽만 고쳐지는 날이 온다.
+
+    `sales` 는 이 스코프에 도구가 없어 문서 근거로만 답한다 (`ROLE_SCOPES`).
+    """
+    return _ask("mixing", body, request, db, user)
 
 
 @router.post("/query", response_model=AgentAnswerOut, summary="FE-RT-38 자연어 질의")
@@ -624,7 +666,6 @@ def _not_implemented():
 
 
 _STILL_501: tuple[tuple[str, str, str, str], ...] = (
-    ("/mixing", "POST", "FE-RT-15", "배합 AI Agent"),
     ("/analysis", "POST", "FE-RT-39", "자동 분석 리포트"),
     ("/decision", "POST", "FE-RT-40", "의사결정 지원"),
     ("/recommendations", "GET", "FE-RT-41", "추천 이력"),

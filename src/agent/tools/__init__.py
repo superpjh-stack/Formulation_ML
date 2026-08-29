@@ -30,7 +30,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from src.agent.tools import receiving, shipping
+from src.agent.tools import mixing, receiving, shipping
 from src.agent.tools._base import (
     MAX_ROWS,
     STATEMENT_TIMEOUT_MS,
@@ -44,7 +44,7 @@ from src.agent.tools._base import (
 )
 
 #: 화면 스코프. `global` 은 도구가 없는 **문서 전용** 스코프다 (FE-RT-38).
-SCOPES: tuple[str, ...] = ("receiving", "shipping", "global")
+SCOPES: tuple[str, ...] = ("receiving", "shipping", "mixing", "global")
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,13 +191,63 @@ _SHIPPING: tuple[ToolSpec, ...] = (
     ),
 )
 
+# ══════════════════════════════════════════════════════════════════════════
+# 배합 Agent (FE-RT-15) — 4개
+# ══════════════════════════════════════════════════════════════════════════
+_MIXING: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="predict_quality",
+        scope="mixing",
+        fn=mixing.predict_quality,
+        summary="배합비율과 공정 조건으로 품질 점수를 예측한다.",
+        args={
+            "sn_pct": "Sn 비율 % (필수, 55~70)",
+            "ag_pct": "Ag 비율 % (필수, 1~5)",
+            "cu_pct": "Cu 비율 % (필수, 0.1~1.5)",
+            "pb_pct": "Pb 비율 % (생략하면 100 − Sn − Ag − Cu 로 계산)",
+            "temperature": "용해 온도 °C (기본 250)",
+            "process_time": "공정 시간 분 (기본 45)",
+            "supplier": "공급사 SUP_A|SUP_B|SUP_C (기본 SUP_A)",
+            "model": "모델명 (기본 gradient_boosting)",
+        },
+        required=("sn_pct", "ag_pct", "cu_pct"),
+    ),
+    ToolSpec(
+        name="recommend_mix",
+        scope="mixing",
+        fn=mixing.recommend_mix,
+        summary="공정 조건에서 최적 배합비율을 추천한다. 수렴 실패도 그대로 알린다.",
+        args={
+            "temperature": "용해 온도 °C (기본 250)",
+            "process_time": "공정 시간 분 (기본 45)",
+            "supplier": "공급사 SUP_A|SUP_B|SUP_C (기본 SUP_A)",
+            "model": "모델명 (기본 gradient_boosting, ridge 불가)",
+        },
+    ),
+    ToolSpec(
+        name="mixing_history",
+        scope="mixing",
+        fn=mixing.mixing_history,
+        summary="기간 내 LOT 의 배합 성분과 품질 점수를 조회한다.",
+        args={
+            "date_from": "조회 시작일 (YYYY-MM-DD, 필수)",
+            "date_to": "조회 종료일 (YYYY-MM-DD, 필수)",
+            "status": "LOT 상태 pass|warning|fail",
+            "limit": "최대 행 수 (기본 20, 상한 50)",
+        },
+        required=("date_from", "date_to"),
+    ),
+)
+
+
 CATALOG: dict[str, ToolSpec] = {
-    spec.name: spec for spec in (*_RECEIVING, *_SHIPPING)
+    spec.name: spec for spec in (*_RECEIVING, *_SHIPPING, *_MIXING)
 }
 
 SCOPE_TOOLS: dict[str, tuple[str, ...]] = {
     "receiving": tuple(s.name for s in _RECEIVING),
     "shipping": tuple(s.name for s in _SHIPPING),
+    "mixing": tuple(s.name for s in _MIXING),
     # FE-RT-38 자연어 질의 — **문서 근거 전용. DB 도구를 주지 않는다.**
     #
     # 여기에 두 스코프의 도구를 합쳐 넣고 싶어지지만 그러면 안 된다. 아래
@@ -223,11 +273,13 @@ SCOPE_TOOLS: dict[str, tuple[str, ...]] = {
 #:   운영 중 조정이 필요하면 **여기서만** 바꾼다 — 도구 코드는 손대지 않는다.
 #: `global` 은 전 역할이 쓴다 — 도구가 없어 데이터 접근이 일어나지 않는다.
 ROLE_SCOPES: dict[str, frozenset[str]] = {
-    "admin":       frozenset({"receiving", "shipping", "global"}),
-    "manufacture": frozenset({"receiving", "global"}),
-    "quality":     frozenset({"receiving", "shipping", "global"}),
+    "admin":       frozenset({"receiving", "shipping", "mixing", "global"}),
+    "manufacture": frozenset({"receiving", "mixing", "global"}),
+    "quality":     frozenset({"receiving", "shipping", "mixing", "global"}),
+    # `sales` 는 배합에서 뺀다 — 출하에서 `manufacture` 를 뺀 것과 같은 판단이다.
+    # 배합은 제조·품질의 일이고, 영업이 배합비를 조회할 업무 근거가 없다.
     "sales":       frozenset({"shipping", "global"}),
-    "viewer":      frozenset({"receiving", "shipping", "global"}),
+    "viewer":      frozenset({"receiving", "shipping", "mixing", "global"}),
 }
 
 

@@ -113,6 +113,28 @@ ALLOWLIST: dict[str, frozenset[str]] = {
         "min_score", "min_score_source",
         "supplier_alias", "customer_alias", "lot_alias",
         "note", "notes", "verdict",
+        # 배합 도구 (FE-RT-15) 질의 조건. 성분 비율은 식별자가 아니다.
+        "temperature", "process_time", "model", "supplier",
+        "optimization_success", "sn", "ag", "cu", "pb",
+    }),
+    #: 배합 추천 결과 (FE-RT-15 `recommend_mix`).
+    #: 배합비·예상 점수뿐이고 **업무 식별자가 없다** — 공급사도 별칭으로 온다.
+    #: `optimization_success` 를 반드시 함께 내보낸다. 이걸 빼면 수렴 실패한
+    #: 추천을 LLM 이 성공한 값으로 읽는다 (§5 오류 계약).
+    "recommendation": frozenset({
+        "sn", "ag", "cu", "pb",
+        "predicted_quality", "optimization_success", "iterations", "message",
+    }),
+    #: 품질 예측 결과 (FE-RT-15 `predict_quality`).
+    "prediction": frozenset({
+        "predicted_quality", "model_used", "passed",
+        "deviation_sn", "deviation_ag", "deviation_cu",
+        "rmse", "r2",
+    }),
+    #: 배합 실적 조회 (`mixing_history`). `lots` 와 같은 필드 집합을 쓴다.
+    "lots_mixing": frozenset({
+        "lot_alias", "date", "sn_pct", "ag_pct", "cu_pct", "pb_pct",
+        "melt_temp_c", "melt_time_min", "quality_score", "status",
     }),
 }
 
@@ -202,6 +224,9 @@ REVIEWED_DENY: dict[str, frozenset[str]] = {
 EXPOSED_TABLES: dict[str, tuple[str, ...]] = {
     "receiving": ("receipts", "components", "suppliers", "lots"),
     "shipping": ("shipments", "claims", "quality", "lots"),
+    # 배합(FE-RT-15)은 `lots` 만 읽는다. `ml_models` 는 T-5 금지다 —
+    # 예측·추천은 테이블이 아니라 **모델 함수**를 부르는 것이라 여기 없다.
+    "mixing": ("lots",),
 }
 
 #: 위 두 스코프의 합집합 — 분류 대장 테스트의 대상.

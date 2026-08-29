@@ -289,8 +289,10 @@ class TestErrorContract:
         입고(FE-RT-10)·출하(FE-RT-20) 는 필수로 승격돼 실동작한다. 나머지는
         여전히 "준비 중" 이며 **가짜 응답으로 채우지 않는다.**
         """
-        # `/query` 는 2026-08-30 에 열었다 (문서 근거 전용, 스코프 global)
-        posts = ["/agents/mixing", "/agents/analysis", "/agents/decision"]
+        # 2026-08-30 에 `/query`(문서 전용)와 `/mixing` 을 열었다.
+        # 남은 셋은 응답 구조가 더 필요하다 — charts[] · root_causes[] ·
+        # agent_recommendations 테이블. 가짜로 채우지 않는다.
+        posts = ["/agents/analysis", "/agents/decision"]
         for path in posts:
             res = client.post(f"/api/v1{path}", json={}, headers=viewer_headers)
             assert res.status_code == 501, path
@@ -785,3 +787,59 @@ class TestAgentSessions:
         assert tools.tools_for("receiving", "sales") == ()
         assert tools.tools_for("shipping", "manufacture") == ()
         assert tools.tools_for("receiving", "manufacture")
+
+    def test_ml_models_is_never_exposed_as_a_tool_table(self):
+        """🔴 §7.7 T-5 — `ml_models` 는 **어느 역할에도 도구로 노출되지 않는다.**
+
+        배합 Agent 를 만들면서 `available_models` 도구를 한 번 넣었다가 지웠다.
+        봉투 키를 `models` 로 바꾸면 `FORBIDDEN_TABLES` 검사를 피할 수 있었지만,
+        그건 통제를 우회한 것이지 지킨 것이 아니다. 모델 성능은 FE-RT-16 이
+        보여주고, 그 지표는 합성 시드 기준이라 V3 가 인용을 막는 값이기도 하다.
+        """
+        from src.agent import allowlist
+
+        assert "ml_models" in allowlist.FORBIDDEN_TABLES
+        for scope, tables in allowlist.EXPOSED_TABLES.items():
+            assert "ml_models" not in tables, scope
+        # 봉투 키로도 우회할 수 없어야 한다
+        assert "models" not in allowlist.ALLOWLIST
+
+    def test_mixing_scope_reads_only_lots(self):
+        """예측·추천은 테이블이 아니라 **모델 함수**를 부른다."""
+        from src.agent import allowlist
+
+        assert allowlist.EXPOSED_TABLES["mixing"] == ("lots",)
+
+    def test_sales_cannot_use_mixing_tools(self):
+        """배합은 제조·품질의 일이다. 영업이 배합비를 조회할 업무 근거가 없다."""
+        import src.agent.tools as tools
+
+        assert tools.tools_for("mixing", "sales") == ()
+        assert tools.tools_for("mixing", "manufacture")
+
+    def test_mixing_tools_reuse_the_existing_endpoints(self):
+        """도구가 `/predict`·`/recommend` 를 다시 구현하면 경계 검증이 두 벌이 된다.
+
+        실제로 **Agent 가 추천한 배합을 예측 API 가 거부하는** 모순이 있었다.
+        """
+        import inspect
+
+        from src.agent.tools import mixing
+
+        for fn, called in ((mixing.predict_quality, "predict"),
+                           (mixing.recommend_mix, "recommend")):
+            src = inspect.getsource(fn)
+            assert f"from app import" in src and called in src, fn.__name__
+
+    def test_mixing_rejects_ratios_that_do_not_sum_to_100(self, client, admin_headers):
+        """goal.md 2.3 — 합계는 정확히 100.0% 다."""
+        from src.agent.tools import mixing
+        from src.agent.tools._base import ToolArgumentError
+        from src.db.session import SessionLocal
+
+        db = SessionLocal()
+        try:
+            with pytest.raises(ToolArgumentError, match="100.0"):
+                mixing.predict_quality(db, sn_pct=62, ag_pct=3, cu_pct=0.5, pb_pct=30)
+        finally:
+            db.close()
