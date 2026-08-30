@@ -48,7 +48,15 @@ LLM_TIMEOUT_S = float(os.getenv("AGENT_LLM_TIMEOUT_S", "55"))
 TEMPERATURE = float(os.getenv("AGENT_TEMPERATURE", "0"))
 
 # ── 검색 ────────────────────────────────────────────────────────────────
-RETRIEVE_K = int(os.getenv("AGENT_RETRIEVE_K", "5"))
+#: 검색 결과 개수. **화면에 근거 카드로 그대로 뜬다.**
+#:
+#: 8 → 3 으로 줄였다 (2026-08-30, 사용자 요청). 근거 8개는 읽히지 않는다 —
+#: 사용자가 확인할 수 있는 양을 넘으면 인용이 장식이 된다.
+#:
+#: ⚠ 대가가 있다. k=8 일 때 평가셋 재현율이 10/10 이었고, 정답 청크가 8위였던
+#:   문항(「용해할 때 몇 분이나 유지해야 해?」)이 있다. k=3 이면 그 문항은
+#:   근거를 못 찾는다. `scripts/run_evalset.py` 로 실측해 두었다.
+RETRIEVE_K = int(os.getenv("AGENT_RETRIEVE_K", "3"))
 
 #: 🔴 유사도 하한 컷오프 — §3.6 이 "환각 방지의 1차 방어선" 이라 부른 값이다.
 #:
