@@ -539,6 +539,11 @@ class TestToolOutputSurvivesRedaction:
         ("shipping", "claim_search",
          dict(date_from="2025-01-01", date_to="2026-12-31")),
         ("shipping", "lot_match_for_customer", dict(customer="CUST-A", limit=10)),
+        # 🔴 배합 도구가 이 목록에 없어서 `mixing_history` 가 `Lot.sn_pct` 라는
+        #    없는 컬럼을 읽고 있는 것을 아무도 못 잡았다 (AttributeError → 500).
+        #    도구를 추가하면 여기에도 추가한다 — 실행과 마스킹을 함께 본다.
+        ("mixing", "mixing_history",
+         dict(date_from="2024-01-01", date_to="2026-12-31", limit=10)),
     ]
 
     @pytest.fixture(scope="module")
@@ -661,3 +666,44 @@ class TestRecommendationHistoryWiring:
         finally:
             db.delete(row)
             db.commit()
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# `lots` 봉투의 키 이름 — 도구가 달라도 같아야 한다
+# ══════════════════════════════════════════════════════════════════════════
+class TestLotsEnvelopeKeys:
+    """`mixing_history` 가 `sn_pct`·`melt_temp_c` 를 쓰다가 두 번 틀렸다.
+
+    1) `Lot` 에 없는 속성이라 도구가 `AttributeError` 로 터졌다.
+    2) 설령 읽혔더라도 `ALLOWLIST["lots"]` 에 없는 키라 마스킹이 통째로 버렸다 —
+       **도구는 성공하고 LLM 은 배합비를 못 보는** 조용한 실패가 됐을 것이다.
+
+    같은 테이블은 어느 도구를 거치든 같은 이름으로 나가야 한다.
+    """
+
+    def test_mixing_history_uses_allowlisted_lot_columns(self, db):
+        from src.agent.allowlist import ALLOWLIST
+
+        r = tools.run(db, "mixing_history", scope="mixing", role="admin",
+                      date_from="2024-01-01", date_to="2026-12-31", limit=5)
+        lots = r.result["lots"]
+        if not lots:
+            pytest.skip("기간 내 LOT 이 없다")
+
+        allowed = ALLOWLIST["lots"]
+        for key in lots[0]:
+            # `lot_id` 는 별칭으로 치환돼 나가는 필드다 (`ALIAS_FIELDS`)
+            assert key == "lot_id" or key in allowed, f"{key} 는 허용목록 밖이다"
+
+    def test_component_values_reach_the_wire(self, db):
+        """배합 실적 질문의 알맹이는 성분비다 — 마스킹 뒤에 남아 있어야 한다."""
+        r = tools.run(db, "mixing_history", scope="mixing", role="admin",
+                      date_from="2024-01-01", date_to="2026-12-31", limit=5)
+        if not r.result["lots"]:
+            pytest.skip("기간 내 LOT 이 없다")
+
+        wire = to_wire(r.result, AliasBook())
+        row = wire.fields["lots"][0]
+        assert {"sn_ratio", "ag_ratio", "cu_ratio", "pb_ratio",
+                "quality_score", "temperature", "time_min"} <= set(row)
+        assert row["lot_alias"].startswith("LOT#")

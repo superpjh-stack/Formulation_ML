@@ -230,16 +230,24 @@ def mixing_history(
         scope=SCOPE,
         args={"date_from": str(a), "date_to": str(b), "status": status},
         result={
+            # 🔴 **컬럼명은 `lots` 테이블 그대로**다 (`sn_ratio`·`temperature`·
+            #    `time_min`). 초판이 `sn_pct`·`melt_temp_c` 같은 이름을 썼는데
+            #    그건 `Lot` 에 없는 속성이라 **도구가 AttributeError 로 터졌고**,
+            #    설령 읽혔더라도 `allowlist.ALLOWLIST["lots"]` 에 없는 키라
+            #    마스킹 단계에서 통째로 버려졌을 이름이다.
+            #    새 이름을 짓지 말고 `shipping.py`·`receiving.py` 의 `lots` 봉투와
+            #    같은 키를 쓴다 — 한 테이블이 도구마다 다른 이름으로 나가면
+            #    허용목록을 도구 수만큼 늘려야 한다.
             "lots": [
                 {
                     "lot_id": r.lot_id,
                     "date": str(r.date),
-                    "sn_pct": num(r.sn_pct, 3),
-                    "ag_pct": num(r.ag_pct, 3),
-                    "cu_pct": num(r.cu_pct, 3),
-                    "pb_pct": num(r.pb_pct, 3),
-                    "melt_temp_c": num(r.melt_temp_c, 1),
-                    "melt_time_min": num(r.melt_time_min, 1),
+                    "sn_ratio": num(r.sn_ratio, 3),
+                    "ag_ratio": num(r.ag_ratio, 3),
+                    "cu_ratio": num(r.cu_ratio, 3),
+                    "pb_ratio": num(r.pb_ratio, 3),
+                    "temperature": num(r.temperature, 1),
+                    "time_min": num(r.time_min, 1),
                     "quality_score": num(r.quality_score, 2),
                     "status": r.status,
                 }
