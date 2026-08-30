@@ -283,15 +283,113 @@ class TestErrorContract:
         })
         assert res.status_code == 400
 
-    def test_recommendations_stays_501(self, client, viewer_headers):
-        """FE-RT-41 은 `agent_recommendations` 테이블이 필요하다.
+    def test_recommendations_is_no_longer_501(self, client, viewer_headers):
+        """FE-RT-41 — `agent_recommendations`(CR-DB-008)를 만들어 501 을 해제했다.
 
-        설계서 §6.2 가 **축소안으로 직접 제외**한 테이블이다 — v1.1 게이트 밖의
-        선택 화면이라 만들지 않았다. 가짜 목록으로 채우지 않는다.
+        예전에는 이 테스트가 501 을 **요구**했다. 테이블이 없으니 화면이 영구히
+        0행이었고, 그 상태를 "구현 완료" 라고 부르는 것이 조용한 실패라 501 을
+        정직하게 내보내고 있었다. 이제 저장소가 있으므로 200 이다.
         """
         res = client.get("/api/v1/agents/recommendations", headers=viewer_headers)
-        assert res.status_code == 501
-        assert res.json()["detail"] == "미구현 — v1 범위 밖"
+        assert res.status_code == 200
+        body = res.json()
+        assert set(body) >= {"items", "total", "page", "page_size"}
+
+    def test_recommend_records_history(self, client, admin_headers):
+        """`POST /recommend` 는 **이력을 남긴다** — 두 경로 중 하나 (§6.9).
+
+        추천이 기록되지 않으면 FE-RT-41 이 답해야 할 질문 5개 중 4개가
+        영구히 답을 못 한다 (plan-agent §2~3).
+        """
+        before = client.get("/api/v1/agents/recommendations?source=recommend_api",
+                            headers=admin_headers).json()["total"]
+
+        res = client.post("/api/v1/recommend", headers=admin_headers, json={
+            "model": "gradient_boosting", "temperature": 250,
+            "process_time": 45, "supplier": "SUP_A",
+        })
+        if res.status_code == 404:
+            pytest.skip("모델 아티팩트 없음")
+        assert res.status_code == 200
+        ratios = res.json()["recommended_ratios"]
+
+        after = client.get("/api/v1/agents/recommendations?source=recommend_api",
+                           headers=admin_headers).json()
+        assert after["total"] == before + 1
+
+        row = after["items"][0]
+        assert row["source"] == "recommend_api"
+        assert row["recommended_ratios"]["sn"] == pytest.approx(ratios["sn"], abs=0.001)
+        # 미적용 행은 실적 칸이 **통째로 null** 이다 — 0 이 아니다 (수용 기준 3)
+        assert row["applied"] is False
+        assert row["actual_ratios"] is None
+        assert row["actual_quality"] is None
+
+    def test_apply_requires_write_role(self, client, viewer_headers, admin_headers):
+        """`viewer` 는 추천–LOT 연결을 확정하지 못한다."""
+        items = client.get("/api/v1/agents/recommendations",
+                           headers=admin_headers).json()["items"]
+        if not items:
+            pytest.skip("추천 이력이 없다")
+        res = client.post(f"/api/v1/agents/recommendations/{items[0]['id']}/apply",
+                          headers=viewer_headers, json={"lot_id": "LOT-2024-001"})
+        assert res.status_code == 403
+
+    def test_apply_unknown_recommendation_is_404(self, client, admin_headers):
+        res = client.post("/api/v1/agents/recommendations/99999999/apply",
+                          headers=admin_headers, json={"lot_id": "LOT-2024-001"})
+        assert res.status_code == 404
+
+    def test_apply_links_lot_and_rejects_double_apply(self, client, admin_headers):
+        """적용 LOT 을 연결하면 그 LOT 의 **실적이 조인돼 나온다.**
+
+        두 번째 연결은 409 다 — 조용히 덮어쓰면 앞의 연결이 사라진다.
+        """
+        lots = client.get("/api/v1/lots?page_size=1", headers=admin_headers)
+        if lots.status_code != 200 or not lots.json().get("items"):
+            pytest.skip("LOT 데이터 없음")
+        lot_id = lots.json()["items"][0]["lot_id"]
+
+        pending = client.get("/api/v1/agents/recommendations?applied=false",
+                             headers=admin_headers).json()["items"]
+        if not pending:
+            pytest.skip("미적용 추천이 없다")
+        rec_id = pending[0]["id"]
+
+        try:
+            res = client.post(f"/api/v1/agents/recommendations/{rec_id}/apply",
+                              headers=admin_headers, json={"lot_id": lot_id})
+            assert res.status_code == 200
+            row = res.json()
+            assert row["applied"] is True
+            assert row["applied_lot_id"] == lot_id
+            # 실제 배합은 `lots` 조인 결과다 — 저장해 둔 값이 아니다
+            assert row["actual_ratios"] is not None
+
+            again = client.post(f"/api/v1/agents/recommendations/{rec_id}/apply",
+                                headers=admin_headers, json={"lot_id": lot_id})
+            assert again.status_code == 409
+
+            bad = client.post(f"/api/v1/agents/recommendations/{rec_id}/apply",
+                              headers=admin_headers, json={"lot_id": lot_id})
+            assert bad.status_code == 409
+        finally:
+            # 해제해도 추천 행은 남는다 (감사 기록)
+            undo = client.request(
+                "DELETE", f"/api/v1/agents/recommendations/{rec_id}/apply",
+                headers=admin_headers,
+            )
+            assert undo.status_code == 200
+            assert undo.json()["applied"] is False
+
+    def test_apply_unknown_lot_is_404(self, client, admin_headers):
+        pending = client.get("/api/v1/agents/recommendations?applied=false",
+                             headers=admin_headers).json()["items"]
+        if not pending:
+            pytest.skip("미적용 추천이 없다")
+        res = client.post(f"/api/v1/agents/recommendations/{pending[0]['id']}/apply",
+                          headers=admin_headers, json={"lot_id": "LOT-없는-000"})
+        assert res.status_code == 404
 
     def test_analysis_never_invents_a_chart_schema(self, client, admin_headers):
         """🔴 `charts[]` 의 **원소 스키마가 계약에 없다** (§7.1).

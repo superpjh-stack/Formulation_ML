@@ -591,3 +591,73 @@ class TestToolOutputSurvivesRedaction:
         masked = book.mask(r.citation.detail)
         assert "SUP_" not in masked
         assert "공급사1" in masked
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# FE-RT-41 추천 이력 적재 — `agent_recommendations` (§6.9 · CR-DB-008)
+#
+# 오케스트레이터는 `recommend_mix` 의 **도구 출력 원본**에서 배합비를 꺼내
+# 이력에 적재한다. 답변 텍스트를 파싱하지 않는다 — 그러면 LLM 표현이 바뀌는
+# 날 이력이 조용히 비어버린다. 그 계약을 여기서 못박는다.
+# ══════════════════════════════════════════════════════════════════════════
+class TestRecommendationHistoryWiring:
+    #: `orchestrator._run` 과 `agents._ask` 가 실제로 읽는 키들
+    REQUIRED_KEYS = {"sn", "ag", "cu", "pb", "predicted_quality", "optimization_success"}
+
+    def test_recommend_mix_exposes_the_keys_the_history_reads(self, db):
+        try:
+            r = tools.run(db, "recommend_mix", scope="mixing", role="admin",
+                          temperature=250, process_time=45, supplier="SUP_A")
+        except Exception as exc:  # noqa: BLE001 — 아티팩트가 없는 환경
+            pytest.skip(f"배합 모델을 부를 수 없다: {exc}")
+
+        rec = r.result["recommendation"]
+        assert self.REQUIRED_KEYS <= set(rec)
+        # 도구 인자도 이력의 입력 조건 컬럼으로 간다
+        assert {"temperature", "process_time", "supplier", "model"} <= set(r.args)
+
+    def test_record_writes_a_row(self, db):
+        from src.api import recommendation_log
+        from src.db.models import AgentRecommendation
+
+        row = recommendation_log.record(
+            db, source=recommendation_log.SOURCE_AGENT,
+            ratios={"sn": 62.0, "ag": 3.0, "cu": 0.5, "pb": 34.5},
+            predicted_quality=94.94, optimization_success=True,
+            model_name="gradient_boosting", temperature=250, process_time=45,
+            supplier="SUP_A",
+        )
+        assert row is not None
+        try:
+            saved = db.get(AgentRecommendation, row.id)
+            assert float(saved.rec_sn) == 62.0
+            assert saved.applied_lot_id is None
+        finally:
+            db.delete(row)
+            db.commit()
+
+    def test_incomplete_ratios_are_not_recorded(self, db):
+        """🔴 빈 값을 0 으로 채우면 "Pb 0% 배합" 이라는 없던 추천이 이력에 생긴다."""
+        from src.api import recommendation_log
+
+        assert recommendation_log.record(
+            db, source=recommendation_log.SOURCE_AGENT,
+            ratios={"sn": 62.0, "ag": 3.0, "cu": 0.5},
+            predicted_quality=None, optimization_success=False,
+        ) is None
+
+    def test_failed_optimization_is_still_recorded(self, db):
+        """수렴 실패를 기록에서 빼면 "AI 추천은 늘 수렴한다" 로 읽힌다 (§5)."""
+        from src.api import recommendation_log
+
+        row = recommendation_log.record(
+            db, source=recommendation_log.SOURCE_API,
+            ratios={"sn": 62.0, "ag": 3.0, "cu": 0.5, "pb": 34.5},
+            predicted_quality=None, optimization_success=False,
+        )
+        assert row is not None
+        try:
+            assert row.optimization_success is False
+        finally:
+            db.delete(row)
+            db.commit()

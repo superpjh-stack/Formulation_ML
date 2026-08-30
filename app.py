@@ -50,7 +50,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy.orm import Session
 
-from src.api import model_cache
+from src.api import model_cache, recommendation_log
 from src.api.deps import get_current_user, get_db
 from src.api.errors import register_exception_handlers
 from src.api.middleware import purge_expired_audit_logs, register_middleware
@@ -312,6 +312,34 @@ def recommend(req: RecommendRequest):
     }
 
 
+def recommend_route(
+    req: RecommendRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """`POST /recommend` 의 라우트 핸들러 — 추천 + **이력 적재**.
+
+    🔴 `recommend()` 자체는 순수하게 둔다. 배합 Agent 의 `recommend_mix` 도구가
+       그 함수를 직접 부르기 때문이다(FE-RT-15). 여기에 DB 인자를 끼워 넣으면
+       도구 쪽 호출이 `Depends` 객체를 값으로 받아 깨진다.
+       **적재는 라우트 경계에서만** 한다 — Agent 경유분은 `/agents/mixing` 이
+       `message_id` 까지 붙여 따로 남긴다.
+    """
+    result = recommend(req)
+    recommendation_log.record(
+        db, source=recommendation_log.SOURCE_API,
+        ratios=result.get("recommended_ratios") or {},
+        predicted_quality=result.get("predicted_quality"),
+        optimization_success=bool(result.get("optimization_success")),
+        model_name=req.model,
+        temperature=req.temperature,
+        process_time=req.process_time,
+        supplier=req.supplier,
+        user_id=user.id,
+    )
+    return result
+
+
 def predict(req: PredictRequest):
     """품질 점수 예측 — FE-RT-13. NFR-P-02 ≤ 3초.
 
@@ -369,7 +397,8 @@ def predict(req: PredictRequest):
 _G3_ROUTES: tuple[tuple[str, str, object, str, str], ...] = (
     ("/models", "GET", list_models, "모델 목록", "G3 배합비율 최적화AI"),
     ("/predict", "POST", predict, "FE-RT-13 품질 예측", "G3 배합비율 최적화AI"),
-    ("/recommend", "POST", recommend, "FE-RT-14 배합비율 추천", "G3 배합비율 최적화AI"),
+    # 🔴 `recommend` 가 아니라 `recommend_route` 다 — 추천 이력(FE-RT-41)을 남긴다
+    ("/recommend", "POST", recommend_route, "FE-RT-14 배합비율 추천", "G3 배합비율 최적화AI"),
 )
 
 # §3.4 인증 면제는 `/health` · `/auth/login` · `/docs` · `/openapi.json` · `/static/*` **뿐**이다.

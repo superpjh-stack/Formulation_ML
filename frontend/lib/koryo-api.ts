@@ -1162,9 +1162,59 @@ export const requestAgentDecision = (lotId: string, sessionId?: number) =>
     AGENT_TIMEOUT_MS
   );
 
+/** 배합 4성분. **없는 값은 `null`** — 0 으로 채우면 "0% 투입"으로 읽힌다 */
+export interface RatioSet {
+  sn: number | null;
+  ag: number | null;
+  cu: number | null;
+  pb: number | null;
+}
+
+/**
+ * FE-RT-41 추천 이력 1행 — `agent_recommendations`(§6.9) + 적용 LOT 조인.
+ *
+ * `actual_*` 는 **적용 LOT 이 연결됐을 때만** 온다. 미적용이면 `null` 이고
+ * 화면은 `—` 로 그린다 (수용 기준 3 — `0` 이 아니다).
+ */
+export interface AgentRecommendationDto {
+  id: number;
+  recommended_at: string | null;
+  /** `recommend_api`(FE-RT-14 화면) | `agent`(FE-RT-15 배합 AI Agent) */
+  source: string;
+  /** 추천을 받은 사람. 적용을 확정한 사람이 아니다 */
+  username: string | null;
+  model_name: string | null;
+  input_temp: number | null;
+  input_time: number | null;
+  input_supplier: string | null;
+  recommended_ratios: RatioSet;
+  predicted_quality: number | null;
+  /** 🔴 `false` 인 행이 존재한다 — 수렴 실패한 추천도 이력에 남는다 (§5) */
+  optimization_success: boolean;
+  applied: boolean;
+  applied_lot_id: string | null;
+  applied_at: string | null;
+  actual_ratios: RatioSet | null;
+  actual_quality: number | null;
+}
+
 /** LLM 을 호출하지 않는 조회다 — 기본 타임아웃을 그대로 쓴다 (§7.10.5) */
-export const getAgentRecommendations = (q: PageQuery = {}) =>
-  apiGet<Page<Record<string, unknown>>>(`/agents/recommendations${qs({ ...q })}`);
+export const getAgentRecommendations = (
+  q: PageQuery & { applied?: boolean; source?: string } = {}
+) => apiGet<Page<AgentRecommendationDto>>(`/agents/recommendations${qs({ ...q })}`);
+
+/**
+ * "이 추천대로 배합했다" 를 사람이 확정한다 — `admin`·`manufacture`·`quality`.
+ *
+ * 🔴 서버가 자동으로 짝지어 주지 않는다. 비슷한 LOT 을 골라 붙이면 그건 추측이고
+ *    화면은 그 추측을 "실제 적용 결과" 로 읽는다.
+ */
+export const applyAgentRecommendation = (id: number, lotId: string) =>
+  apiPost<AgentRecommendationDto>(`/agents/recommendations/${id}/apply`, { lot_id: lotId });
+
+/** 잘못 연결한 것을 되돌린다. 추천 행 자체는 남는다 (감사 기록) */
+export const unapplyAgentRecommendation = (id: number) =>
+  apiDelete<AgentRecommendationDto>(`/agents/recommendations/${id}/apply`);
 
 /**
  * FE-RT-42 실행 로그 — **`admin` 전용** (`agent-architecture.md` §7.1).

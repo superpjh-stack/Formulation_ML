@@ -614,10 +614,11 @@ class DocChunk(Base):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# agent-architecture.md §6.3~§6.8 — AI Agent 실행 기록
+# agent-architecture.md §6.3~§6.9 — AI Agent 실행 기록
 #
-# `agent_recommendations`(§6.9)는 만들지 않는다. FE-RT-41 은 선택 화면이고 v1.1
-# 게이트 밖이라 설계서가 축소안으로 명시했다 (§6.2).
+# `agent_recommendations`(§6.9)를 **만들었다** (CR-DB-008). 축소안으로 빠져
+# 있던 테이블이다 — 없는 동안 FE-RT-41 은 501 을 그리고 있었고, 그 화면이
+# 답해야 할 질문 5개 중 4개가 "저장소 부재"로 답을 못 했다 (plan-agent §2~3).
 # ══════════════════════════════════════════════════════════════════════════
 class AgentSession(Base):
     __tablename__ = "agent_sessions"
@@ -790,6 +791,71 @@ class AgentFeedback(Base):
     )
 
 
+class AgentRecommendation(Base):
+    """추천 vs 실제 적용 — FE-RT-41 `FR-AG-04` · §6.9 (CR-DB-008).
+
+    추천이 나온 순간 1행 INSERT 하고, 그 추천대로 배합한 LOT 이 확정되면
+    `applied_lot_id`·`applied_at` 을 UPDATE 한다. 두 시점을 한 행에 두는 것이
+    "추천 vs 실제 적용 비교"(FR-AG-04)를 조인 없이 답하게 해준다.
+
+    🔴 **적용 배합비와 실측 품질은 저장하지 않는다.** §6.9 표에는
+       `actual_quality` 컬럼이 있지만 그 값의 정본은 `lots.quality_score` 다.
+       같은 값을 두 곳에 두면 한쪽만 갱신되는 날이 오고, 화면은 그때 옛 값을
+       현재값으로 그린다 — 이 프로젝트가 걷어낸 조용한 실패와 같은 종류다.
+       `applied_lot_id` 로 조인해서 **조회 시점의 실측**을 읽는다.
+
+    ⚠ `applied_lot_id` 는 §6.9 가 VARCHAR(30) 이라 적었으나 `lots.lot_id` 가
+      VARCHAR(20) 이라 길이를 맞췄다. 참조 대상보다 긴 값은 어차피 FK 를
+      통과하지 못한다.
+
+    ⚠ 성분 합계 100% **CHECK 는 걸지 않는다.** 수용 기준 6번이 "합계가 100.0 이
+      아닌 추천 행은 경고 배지" 라고 정했다 — 그런 행이 **존재할 수 있어야**
+      배지를 띄울 수 있다. 저장을 막으면 이상한 추천이 나온 사실 자체가 사라진다.
+    """
+
+    __tablename__ = "agent_recommendations"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    recommended_at: Mapped[dt.datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    #: 사용자 삭제 시 추천 이력은 남긴다 — 감사 대상이다
+    user_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("users.id", ondelete="SET NULL")
+    )
+    #: `recommend_api`(FE-RT-14 화면) | `agent`(FE-RT-15 배합 AI Agent)
+    source: Mapped[str] = mapped_column(String(20), nullable=False)
+    #: Agent 경유일 때만 채운다. 재색인·세션 삭제로 메시지가 사라져도 추천은 남는다
+    message_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("agent_messages.id", ondelete="SET NULL")
+    )
+    input_temp: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    input_time: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    input_supplier: Mapped[str | None] = mapped_column(String(20))
+    #: 추천 배합비 — `lots.*_ratio` 와 같은 DECIMAL(6,3)
+    rec_sn: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    rec_ag: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    rec_cu: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    rec_pb: Mapped[Decimal] = mapped_column(Numeric(6, 3), nullable=False)
+    predicted_quality: Mapped[Decimal | None] = mapped_column(Numeric(6, 2))
+    model_name: Mapped[str | None] = mapped_column(String(40))
+    #: 🔴 §5 오류 계약 — 수렴 실패는 200 + `false` 다. **그 행도 저장한다.**
+    #:    실패한 추천을 기록에서 빼면 "AI 추천은 늘 수렴한다" 로 읽힌다.
+    optimization_success: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="true"
+    )
+    #: 실제로 이 추천대로 배합한 LOT. 내부 BIGINT `id` 가 아니라 업무 키를 쓴다
+    applied_lot_id: Mapped[str | None] = mapped_column(
+        String(20), ForeignKey("lots.lot_id", ondelete="SET NULL")
+    )
+    applied_at: Mapped[dt.datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("ix_agent_recommendations_recommended_at", recommended_at.desc()),
+        Index("ix_agent_recommendations_applied_lot", "applied_lot_id"),
+    )
+
+
 __all__ = [
     "Base",
     # SF-TD5 v1.0 — §3.1~§3.10
@@ -820,4 +886,6 @@ __all__ = [
     "AgentCitation",
     "AgentRun",
     "AgentFeedback",
+    # agent-architecture.md §6.9 (CR-DB-008)
+    "AgentRecommendation",
 ]

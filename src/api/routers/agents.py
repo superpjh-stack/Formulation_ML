@@ -17,7 +17,8 @@ v1.1 게이트는 **`/agents/receiving`(FE-RT-10) · `/agents/shipping`(FE-RT-20
 | `POST /agents/mixing` | 실동작 | FE-RT-15 |
 | `POST /agents/decision` | 실동작 | FE-RT-40 |
 | `POST /agents/analysis` | 실동작 (**차트 없음**) | FE-RT-39 |
-| `/recommendations` | **501 유지** | `agent_recommendations` 테이블 미생성 |
+| `GET  /agents/recommendations` | 실동작 | FE-RT-41 (**LLM 을 부르지 않는다**) |
+| `POST/DELETE /agents/recommendations/{id}/apply` | 실동작 | 추천 ↔ 실제 LOT 연결 |
 
 **`/agents/logs` 를 admin 전용으로 좁혔다** (§7.1). `agent_runs.prompt_sent` 에
 외부 송출 전문이 들어가므로 다른 사용자의 질문 전문을 전 직원이 보면 안 된다.
@@ -43,16 +44,20 @@ from src.agent.tools._base import ToolError
 from src.api.deps import get_current_user, get_db, require_roles
 from src.api.errors import NOT_IMPLEMENTED_DETAIL
 from src.api.middleware import set_audit
+from src.api.recommendation_log import SOURCE_AGENT, record as record_recommendation
 from src.api.schemas import Page, PageParams, paginate
 from src.api.serialization import iso
+from src.api.serialization import safe_float
 from src.db.models import (
     AgentCitation,
     AgentFeedback,
     AgentMessage,
+    AgentRecommendation,
     AgentRun,
     AgentSession,
     DocChunk,
     DocSource,
+    Lot,
     User,
 )
 
@@ -332,6 +337,23 @@ def _ask(scope: str, body: AgentAskIn, request: Request, db: Session, user: User
 
     set_audit(request, target_table="agent_messages", target_id=assistant.id,
               after={"scope": scope, "answer_status": outcome.answer_status})
+
+    # FE-RT-41 이력 — 추천이 실행됐으면 남긴다 (§6.9). 메시지가 커밋된 뒤라야
+    # `message_id` 를 걸 수 있다. 적재 실패는 답변을 죽이지 않는다
+    # (`recommendation_log` 모듈 주석 참조).
+    rec = outcome.recommendation
+    if rec:
+        record_recommendation(
+            db, source=SOURCE_AGENT,
+            ratios={k: rec.get(k) for k in ("sn", "ag", "cu", "pb")},
+            predicted_quality=rec.get("predicted_quality"),
+            optimization_success=bool(rec.get("optimization_success")),
+            model_name=rec.get("model"),
+            temperature=rec.get("temperature"),
+            process_time=rec.get("process_time"),
+            supplier=rec.get("supplier"),
+            user_id=user.id, message_id=assistant.id,
+        )
 
     # 배합 추천이 실행됐으면 구조화된 값을 함께 준다 — 화면이 카드로 그린다.
     # 답변 텍스트에서 숫자를 파싱하지 않는다. 그건 LLM 표현에 의존하는 짓이다.
@@ -864,27 +886,216 @@ def reindex(db: Session = Depends(get_db)):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 501 유지 — 선택 화면 5종 (§7.2)
+# FE-RT-41 추천 이력 — `FR-AG-04` "AI 배합 추천 이력 및 실제 적용 결과 비교"
+#
+# ── 2026-08-30: 501 을 해제했다 ────────────────────────────────────────────
+#
+# 이 화면만 501 이 남아 있던 이유는 UI 가 아니라 **저장소**였다. 추천이 어디에도
+# 기록되지 않아 "지난달 추천을 몇 번 적용했나" 에 답할 방법이 없었다.
+# `agent_recommendations`(§6.9)를 CR-DB-008 로 만들고, 추천이 나오는 두 경로
+# (`POST /recommend` · `POST /agents/mixing`)가 전부 적재하게 했다.
+#
+# 🔴 **이 엔드포인트는 LLM 을 부르지 않는다** (§7.2 각주). 테이블 조회다.
 # ══════════════════════════════════════════════════════════════════════════
-def _not_implemented():
-    raise HTTPException(status_code=501, detail=NOT_IMPLEMENTED_DETAIL)
+class RatioSet(BaseModel):
+    """배합 4성분. **없는 값은 `null` 이다** — 0 으로 채우면 "0% 투입"으로 읽힌다."""
+
+    sn: float | None = None
+    ag: float | None = None
+    cu: float | None = None
+    pb: float | None = None
 
 
-_STILL_501: tuple[tuple[str, str, str, str], ...] = (
-    ("/recommendations", "GET", "FE-RT-41", "추천 이력"),
-)
+class AgentRecommendationOut(BaseModel):
+    """추천 1건 + 그 추천이 적용된 LOT 의 실적.
 
-for _path, _method, _screen, _name in _STILL_501:
-    router.add_api_route(
-        _path, _not_implemented, methods=[_method], status_code=501,
-        summary=f"{_screen} {_name} (미구현 — 501)",
-        description=(
-            f"**501 Not Implemented.** {_screen} 은 v1.1 게이트 밖이다 "
-            "(agent-architecture.md §7.2). 프론트는 501 을 받아 \"준비 중\" 을 "
-            "렌더링한다. 가짜 응답으로 채우지 마라."
+    🔴 `actual_ratios`·`actual_quality` 는 **저장값이 아니라 `lots` 조인 결과**다
+       (§6.9 의 `actual_quality` 컬럼을 만들지 않은 이유는 모델 주석 참조).
+       적용 LOT 이 없으면 `null` 이고, 화면은 그걸 `—` 로 그린다.
+
+    ⚠ 차이(추천−적용)는 **서버가 계산하지 않는다.** 프론트가 두 값에서 만든다
+       (plan-agent FE-RT-41 §4). 여기서 만들면 소수 자릿수 규약이 두 벌이 된다.
+    """
+
+    id: int
+    recommended_at: str | None
+    source: str
+    username: str | None = None
+    model_name: str | None = None
+    input_temp: float | None = None
+    input_time: float | None = None
+    input_supplier: str | None = None
+    recommended_ratios: RatioSet
+    predicted_quality: float | None = None
+    #: 🔴 `false` 인 행이 존재한다. 수렴 실패한 추천도 이력에 남는다 (§5)
+    optimization_success: bool
+    applied: bool
+    applied_lot_id: str | None = None
+    applied_at: str | None = None
+    actual_ratios: RatioSet | None = None
+    actual_quality: float | None = None
+
+
+class ApplyIn(BaseModel):
+    lot_id: str = Field(min_length=1, max_length=20)
+
+
+#: 성분 3자리(`lots.*_ratio DECIMAL(6,3)`) · 품질 2자리(`quality.score DECIMAL(5,2)`)
+_RATIO_DIGITS = 3
+_SCORE_DIGITS = 2
+
+
+def _username_of(db: Session, user_id: int | None) -> str | None:
+    """목록은 조인으로 한 번에 읽지만, 단건 응답은 여기서 채운다.
+
+    ⚠ **추천을 받은 사람**이지 지금 연결하는 사람이 아니다. 두 사람이 다를 수
+      있고(작업자가 추천을 받고 반장이 적용을 확정), 그 구분이 사라지면
+      화면이 연결자를 추천자로 읽는다.
+    """
+    if user_id is None:
+        return None
+    return db.execute(select(User.username).where(User.id == user_id)).scalar_one_or_none()
+
+
+def _recommendation_out(rec: AgentRecommendation, lot: Lot | None,
+                        username: str | None = None) -> dict:
+    """행 하나를 응답 dict 로. **적용 LOT 이 없으면 실적 칸은 통째로 `null`.**"""
+    actual = None
+    if lot is not None:
+        actual = RatioSet(
+            sn=safe_float(lot.sn_ratio, _RATIO_DIGITS),
+            ag=safe_float(lot.ag_ratio, _RATIO_DIGITS),
+            cu=safe_float(lot.cu_ratio, _RATIO_DIGITS),
+            pb=safe_float(lot.pb_ratio, _RATIO_DIGITS),
+        )
+    return {
+        "id": rec.id,
+        "recommended_at": iso(rec.recommended_at),
+        "source": rec.source,
+        "username": username,
+        "model_name": rec.model_name,
+        "input_temp": safe_float(rec.input_temp, 2),
+        "input_time": safe_float(rec.input_time, 2),
+        "input_supplier": rec.input_supplier,
+        "recommended_ratios": RatioSet(
+            sn=safe_float(rec.rec_sn, _RATIO_DIGITS),
+            ag=safe_float(rec.rec_ag, _RATIO_DIGITS),
+            cu=safe_float(rec.rec_cu, _RATIO_DIGITS),
+            pb=safe_float(rec.rec_pb, _RATIO_DIGITS),
         ),
+        "predicted_quality": safe_float(rec.predicted_quality, _SCORE_DIGITS),
+        "optimization_success": bool(rec.optimization_success),
+        "applied": rec.applied_lot_id is not None,
+        "applied_lot_id": rec.applied_lot_id,
+        "applied_at": iso(rec.applied_at),
+        "actual_ratios": actual,
+        # 실측 품질은 LOT 이 들고 있다. 미검사 LOT 이면 NULL 이고 그대로 내보낸다
+        "actual_quality": safe_float(lot.quality_score, _SCORE_DIGITS) if lot else None,
+    }
+
+
+@router.get("/recommendations", response_model=Page[AgentRecommendationOut],
+            summary="FE-RT-41 추천 이력 (추천 vs 실제 적용)")
+def list_recommendations(
+    db: Session = Depends(get_db),
+    pg: PageParams = Depends(),
+    applied: bool | None = Query(None, description="적용 여부. 생략하면 전체"),
+    source: str | None = Query(None, description="`recommend_api` | `agent`"),
+):
+    """전 역할 R. 최신 추천이 위다.
+
+    적용 LOT 의 배합·품질은 `lots` 를 **LEFT JOIN** 해서 조회 시점 값을 읽는다 —
+    복사해 두지 않으므로 LOT 이 재검사되면 이 화면도 함께 바뀐다.
+    """
+    order = pg.parse_sort(
+        {
+            "recommended_at": AgentRecommendation.recommended_at,
+            "applied_at": AgentRecommendation.applied_at,
+            "predicted_quality": AgentRecommendation.predicted_quality,
+        },
+        default=AgentRecommendation.recommended_at.desc(),
     )
 
-del _path, _method, _screen, _name
+    stmt = (
+        select(AgentRecommendation, Lot, User.username)
+        .outerjoin(Lot, Lot.lot_id == AgentRecommendation.applied_lot_id)
+        .outerjoin(User, User.id == AgentRecommendation.user_id)
+        .order_by(order, AgentRecommendation.id.desc())
+    )
+    if applied is True:
+        stmt = stmt.where(AgentRecommendation.applied_lot_id.isnot(None))
+    elif applied is False:
+        stmt = stmt.where(AgentRecommendation.applied_lot_id.is_(None))
+    if source:
+        stmt = stmt.where(AgentRecommendation.source == source)
+
+    return paginate(
+        db, stmt, pg,
+        lambda row: _recommendation_out(row[0], row[1], row[2]),
+        scalars=False,
+    )
+
+
+@router.post("/recommendations/{rec_id}/apply", response_model=AgentRecommendationOut,
+             summary="추천을 실제 적용 LOT 에 연결",
+             dependencies=[Depends(require_roles("admin", "manufacture", "quality"))])
+def apply_recommendation(rec_id: int, body: ApplyIn, request: Request,
+                         db: Session = Depends(get_db)):
+    """"이 추천대로 배합했다" 를 사람이 확정한다.
+
+    🔴 **자동으로 짝지어 주지 않는다.** 시간·배합비가 비슷한 LOT 을 골라 붙이면
+       그건 추측이고, 화면은 그 추측을 "실제 적용 결과" 라고 읽는다 (FR-AG-04).
+       누가 언제 연결했는지는 감사로그에 남는다.
+
+    이미 연결된 추천은 **409** 다. 조용히 덮어쓰면 앞의 연결이 사라진다 —
+    바꾸려면 DELETE 로 먼저 해제한다.
+    """
+    rec = db.get(AgentRecommendation, rec_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="추천 이력을 찾을 수 없습니다")
+    if rec.applied_lot_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"이미 {rec.applied_lot_id} 에 연결된 추천입니다. 먼저 연결을 해제하세요",
+        )
+
+    lot_id = body.lot_id.strip()
+    lot = db.execute(select(Lot).where(Lot.lot_id == lot_id)).scalar_one_or_none()
+    if lot is None:
+        raise HTTPException(status_code=404, detail="LOT 을 찾을 수 없습니다")
+
+    rec.applied_lot_id = lot.lot_id
+    rec.applied_at = dt.datetime.now()
+    db.commit()
+    db.refresh(rec)
+
+    set_audit(request, target_table="agent_recommendations", target_id=rec.id,
+              before={"applied_lot_id": None},
+              after={"applied_lot_id": rec.applied_lot_id})
+    return _recommendation_out(rec, lot, _username_of(db, rec.user_id))
+
+
+@router.delete("/recommendations/{rec_id}/apply", response_model=AgentRecommendationOut,
+               summary="추천–LOT 연결 해제",
+               dependencies=[Depends(require_roles("admin", "manufacture", "quality"))])
+def unapply_recommendation(rec_id: int, request: Request, db: Session = Depends(get_db)):
+    """잘못 연결한 것을 되돌린다. 이미 해제된 추천에 다시 불러도 200 이다 (멱등).
+
+    추천 행 자체는 지우지 않는다 — 추천이 있었다는 사실은 감사 기록이다.
+    """
+    rec = db.get(AgentRecommendation, rec_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="추천 이력을 찾을 수 없습니다")
+
+    before = rec.applied_lot_id
+    rec.applied_lot_id = None
+    rec.applied_at = None
+    db.commit()
+    db.refresh(rec)
+
+    set_audit(request, target_table="agent_recommendations", target_id=rec.id,
+              before={"applied_lot_id": before}, after={"applied_lot_id": None})
+    return _recommendation_out(rec, None, _username_of(db, rec.user_id))
+
 
 __all__ = ["router"]

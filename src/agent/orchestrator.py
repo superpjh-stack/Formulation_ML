@@ -63,6 +63,10 @@ class AgentOutcome:
     model_id: str | None = None
     rule_hash: str = ""
     tool_calls: list[dict] = field(default_factory=list)
+    #: `recommend_mix` 가 돌았을 때의 **원본 추천값** — FE-RT-41 이력 적재용.
+    #: 🔴 답변 텍스트에서 숫자를 파싱하지 않는다. 그건 LLM 표현에 의존하는 짓이다.
+    #:    도구가 돌려준 그 값을 그대로 들고 온다.
+    recommendation: dict | None = None
     retrieval_stats: dict | None = None
     latency_ms: dict[str, int] = field(default_factory=dict)
     input_tokens: int | None = None
@@ -282,6 +286,10 @@ def answer(
         try:
             tr = tool_registry.run(db, call["name"], scope=scope, role=role, **(call.get("args") or {}))
             tool_results.append(tr)
+            # FE-RT-41 추천 이력은 **도구 출력 원본**으로 적재한다 (§6.9).
+            # `tool_calls` 요약에는 건수만 남아서 배합비가 사라진다.
+            if tr.tool == "recommend_mix":
+                out.recommendation = {**(tr.args or {}), **(tr.result.get("recommendation") or {})}
             rows = tr.citation.count if tr.citation else None
             calls_log.append({
                 "tool": call["name"], "args": call.get("args"),
