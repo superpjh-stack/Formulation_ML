@@ -1,0 +1,61 @@
+# 고려솔더 AI 스마트공장 — Hostinger VPS(Docker Manager) 배포
+#
+# 빌드 컨텍스트가 공개 GitHub 레포라 VPS 에 소스를 따로 둘 필요가 없다.
+# 갱신은 main 에 푸시한 뒤 Docker Manager 에서 재빌드(rebuild)하면 된다.
+#
+# 접속:  프론트 http://<VPS_IP>:3000   ·   API 문서 http://<VPS_IP>:8000/docs
+# 시드 계정: admin / koryo1234!  (scripts/seed_db.py SEED_PASSWORD — 개발 전용)
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: koryo_solder_db
+      # 이 DB 는 compose 내부망에만 붙어 있고 호스트로 포트를 열지 않는다.
+      POSTGRES_HOST_AUTH_METHOD: trust
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d koryo_solder_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: https://github.com/superpjh-stack/Formulation_ML.git#main
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres@db:5432/koryo_solder_db
+      # JWT_SECRET_KEY 는 주지 않는다 — entrypoint 가 볼륨에 만들어 재기동에도 유지한다.
+      #
+      # AI Agent 외부 API 키(ANTHROPIC_API_KEY·OPENAI_API_KEY)도 넣지 않았다.
+      # 대외비 문서를 외부 API 로 보내는 건 CR-ARCH-001 승인 대기다(.env.example 참조).
+      # 승인 후 여기에 키를 넣으면 문서 근거 기능이 켜진다.
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - backend_state:/app/run
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: https://github.com/superpjh-stack/Formulation_ML.git#main
+      dockerfile: frontend/Dockerfile
+    environment:
+      # next.config.js 의 `/api/:path*` rewrite 대상.
+      # 프론트가 상대경로로 부르므로 백엔드 CORS 는 건드릴 필요가 없다.
+      API_PROXY_TARGET: http://backend:8000
+    depends_on:
+      - backend
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  backend_state:
